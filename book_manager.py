@@ -208,7 +208,7 @@ def _parse_book_info_page(soup: BeautifulSoup, book_id: str) -> BookInfo:
             elif (
                 url.next is not None
                 and url.next.next is not None
-                and "click "GET" at the top" in url.next.next.text.strip()
+                and "click \"GET\" at the top" in url.next.next.text.strip()
             ):
                 libgen_url = url["href"]
                 # TODO : Temporary fix ? Maybe get URLs from https://open-slum.org/ ?
