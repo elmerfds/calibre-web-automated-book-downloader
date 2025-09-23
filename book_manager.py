@@ -208,7 +208,7 @@ def _parse_book_info_page(soup: BeautifulSoup, book_id: str) -> BookInfo:
             elif (
                 url.next is not None
                 and url.next.next is not None
-                and "click “GET” at the top" in url.next.next.text.strip()
+                and "click "GET" at the top" in url.next.next.text.strip()
             ):
                 libgen_url = url["href"]
                 # TODO : Temporary fix ? Maybe get URLs from https://open-slum.org/ ?
@@ -237,27 +237,68 @@ def _parse_book_info_page(soup: BeautifulSoup, book_id: str) -> BookInfo:
     # Remove empty urls
     urls = [url for url in urls if url != ""]
 
+    # Helper function to safely get text from divs
+    def safe_get_text(div_element, default=""):
+        """Safely extract text from a div element."""
+        if div_element is None:
+            return default
+        
+        if hasattr(div_element, 'next') and div_element.next is not None:
+            if hasattr(div_element.next, 'strip'):
+                return div_element.next.strip()
+            else:
+                return str(div_element.next).strip()
+        elif hasattr(div_element, 'text'):
+            return div_element.text.strip()
+        elif hasattr(div_element, 'get_text'):
+            return div_element.get_text().strip()
+        else:
+            return str(div_element).strip()
+
+    # Extract basic information with error handling
+    try:
+        title = safe_get_text(divs[7], "Unknown Title")
+    except (IndexError, AttributeError):
+        title = "Unknown Title"
+        logger.warning(f"Could not extract title for book ID: {book_id}")
+
+    try:
+        publisher = safe_get_text(divs[11], "Unknown Publisher")
+    except (IndexError, AttributeError):
+        publisher = "Unknown Publisher"
+        logger.warning(f"Could not extract publisher for book ID: {book_id}")
+
+    try:
+        author = safe_get_text(divs[9], "Unknown Author")
+    except (IndexError, AttributeError):
+        author = "Unknown Author"
+        logger.warning(f"Could not extract author for book ID: {book_id}")
+
     # Extract basic information
     book_info = BookInfo(
         id=book_id,
         preview=preview,
-        title=divs[7].next.strip(),
-        publisher=divs[11].text.strip(),
-        author=divs[9].text.strip(),
+        title=title,
+        publisher=publisher,
+        author=author,
         format=format,
         size=size,
         download_urls=urls,
     )
 
     # Extract additional metadata
-    info = _extract_book_metadata(divs[-6])
-    book_info.info = info
+    try:
+        info = _extract_book_metadata(divs[-6])
+        book_info.info = info
 
-    # Set language and year from metadata if available
-    if info.get("Language"):
-        book_info.language = info["Language"][0]
-    if info.get("Year"):
-        book_info.year = info["Year"][0]
+        # Set language and year from metadata if available
+        if info.get("Language"):
+            book_info.language = info["Language"][0]
+        if info.get("Year"):
+            book_info.year = info["Year"][0]
+    except (IndexError, AttributeError, Exception) as e:
+        logger.warning(f"Could not extract metadata for book ID {book_id}: {e}")
+        book_info.info = {}
 
     return book_info
 
