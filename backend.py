@@ -19,8 +19,27 @@ logger = setup_logger(__name__)
 
 def _sanitize_filename(filename: str) -> str:
     """Sanitize a filename by replacing spaces with underscores and removing invalid characters."""
-    keepcharacters = (' ','.','_')
-    return "".join(c for c in filename if c.isalnum() or c in keepcharacters).rstrip()
+    if not filename or not filename.strip():
+        return "Unknown_Title"
+    
+    # Keep more characters that are typically safe in filenames
+    keepcharacters = (' ', '.', '_', '-', '(', ')', '[', ']', ',')
+    # Remove or replace problematic characters
+    sanitized = "".join(c for c in filename if c.isalnum() or c in keepcharacters).rstrip()
+    
+    # Replace multiple spaces with single spaces, then spaces with underscores
+    sanitized = " ".join(sanitized.split())
+    sanitized = sanitized.replace(" ", "_")
+    
+    # If sanitization resulted in empty string, use fallback
+    if not sanitized:
+        return "Unknown_Title"
+        
+    # Limit length to avoid filesystem issues
+    if len(sanitized) > 200:
+        sanitized = sanitized[:200]
+    
+    return sanitized
 
 def search_books(query: str, filters: SearchFilters) -> List[Dict[str, Any]]:
     """Search for books matching the query.
@@ -139,11 +158,28 @@ def _download_book_with_cancellation(book_id: str, cancel_flag: Event) -> Option
         book_info = book_queue._book_data[book_id]
         logger.info(f"Starting download: {book_info.title}")
 
-        if USE_BOOK_TITLE:
-            book_name = _sanitize_filename(book_info.title)
+        # Debug logging for filename generation
+        logger.info(f"=== FILENAME GENERATION DEBUG ===")
+        logger.info(f"USE_BOOK_TITLE setting: {USE_BOOK_TITLE} (type: {type(USE_BOOK_TITLE)})")
+        logger.info(f"Raw book title: '{book_info.title}' (type: {type(book_info.title)})")
+        logger.info(f"Book ID: '{book_id}'")
+        logger.info(f"Book format: '{book_info.format}'")
+
+        if USE_BOOK_TITLE and book_info.title and book_info.title.strip():
+            original_title = book_info.title
+            sanitized_title = _sanitize_filename(book_info.title)
+            book_name = sanitized_title
+            logger.info(f"Original title: '{original_title}'")
+            logger.info(f"Sanitized title: '{sanitized_title}'")
+            logger.info(f"Using sanitized book title for filename")
         else:
             book_name = book_id
+            logger.info(f"Using book ID for filename (USE_BOOK_TITLE={USE_BOOK_TITLE}, title='{book_info.title}')")
+            
         book_name += f".{book_info.format}"
+        logger.info(f"Final filename with extension: '{book_name}'")
+        logger.info(f"=== END FILENAME DEBUG ===")
+        
         book_path = TMP_DIR / book_name
 
         # Check cancellation before download
