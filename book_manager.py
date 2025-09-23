@@ -243,17 +243,39 @@ def _parse_book_info_page(soup: BeautifulSoup, book_id: str) -> BookInfo:
         if div_element is None:
             return default
         
+        # Try to get the next sibling text
         if hasattr(div_element, 'next') and div_element.next is not None:
-            if hasattr(div_element.next, 'strip'):
-                return div_element.next.strip()
+            next_element = div_element.next
+            if hasattr(next_element, 'strip') and callable(getattr(next_element, 'strip')):
+                try:
+                    return next_element.strip()
+                except:
+                    pass
             else:
-                return str(div_element.next).strip()
-        elif hasattr(div_element, 'text'):
-            return div_element.text.strip()
-        elif hasattr(div_element, 'get_text'):
-            return div_element.get_text().strip()
-        else:
+                try:
+                    return str(next_element).strip()
+                except:
+                    pass
+        
+        # Try to get text from the element itself
+        if hasattr(div_element, 'text'):
+            try:
+                return div_element.text.strip()
+            except:
+                pass
+        
+        # Try get_text method
+        if hasattr(div_element, 'get_text'):
+            try:
+                return div_element.get_text().strip()
+            except:
+                pass
+        
+        # Last resort - convert to string
+        try:
             return str(div_element).strip()
+        except:
+            return default
 
     # Extract basic information with error handling
     try:
