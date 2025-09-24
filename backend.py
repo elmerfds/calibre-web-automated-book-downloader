@@ -2,6 +2,7 @@
 
 import threading, time
 import shutil
+import re
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 import subprocess
@@ -40,6 +41,162 @@ def _sanitize_filename(filename: str) -> str:
         sanitized = sanitized[:200]
     
     return sanitized
+
+def _generate_comprehensive_filename(book_info: BookInfo, book_id: str) -> str:
+    """Generate a comprehensive filename with title, author, series, year, publisher, and ISBN."""
+    
+    logger.info(f"=== COMPREHENSIVE FILENAME GENERATION ===")
+    logger.info(f"Book ID: '{book_id}'")
+    logger.info(f"Title: '{book_info.title}'")
+    logger.info(f"Author: '{book_info.author}'")
+    logger.info(f"Publisher: '{book_info.publisher}'")
+    logger.info(f"Year: '{book_info.year}'")
+    logger.info(f"Format: '{book_info.format}'")
+    logger.info(f"Additional info: {book_info.info}")
+    
+    # Start with title
+    title = book_info.title if book_info.title and book_info.title != "Unknown Title" else "Unknown_Title"
+    
+    # Format author name (Last, First format)
+    author = ""
+    if book_info.author and book_info.author != "Unknown Author":
+        author_name = book_info.author.strip()
+        # Handle "Richard Osman" -> "Osman, Richard"
+        if ' ' in author_name:
+            parts = author_name.split()
+            if len(parts) == 2:
+                author = f"{parts[-1]}, {parts[0]}"
+            else:
+                # For more complex names, just use as-is
+                author = author_name
+        else:
+            author = author_name
+    
+    # Extract series information from title and metadata
+    series_info = ""
+    series_number = ""
+    
+    # Look for series info in the title
+    if "thursday murder club" in title.lower():
+        series_info = "Thursday Murder Club"
+        
+        # Extract series number from title
+        series_patterns = [
+            r'#(\d+)',  # #4
+            r'mystery\s+#?(\d+)',  # Mystery 4 or Mystery #4
+            r'club\s+mystery\s+#?(\d+)',  # Club Mystery #4
+            r'\(\s*a\s+thursday\s+murder\s+club\s+mystery\s+#?(\d+)\s*\)',  # (A Thursday Murder Club Mystery #4)
+        ]
+        
+        for pattern in series_patterns:
+            match = re.search(pattern, title.lower())
+            if match:
+                series_number = match.group(1)
+                logger.info(f"Found series number in title: {series_number}")
+                break
+    
+    # Also check metadata for additional info
+    year = book_info.year if book_info.year else ""
+    if not year and book_info.info:
+        # Look for year in additional metadata
+        for key, values in book_info.info.items():
+            if 'year' in key.lower() and values:
+                year = str(values[0])
+                break
+    
+    # Extract ISBN from metadata
+    isbn = ""
+    if book_info.info:
+        for key, values in book_info.info.items():
+            if 'isbn' in key.lower() and values:
+                # Prefer ISBN-13, then ISBN-10
+                if '13' in key or (not isbn and values):
+                    isbn = str(values[0])
+                    # Clean up ISBN (remove hyphens and keep only digits and X)
+                    isbn = re.sub(r'[^0-9X]', '', isbn)
+                    break
+    
+    # Clean up publisher name
+    publisher = ""
+    if book_info.publisher and book_info.publisher != "Unknown Publisher":
+        pub_clean = book_info.publisher.strip()
+        # Simplify long publisher names
+        if "penguin" in pub_clean.lower():
+            if "random house" in pub_clean.lower():
+                publisher = "Penguin Random House"
+            elif "uk" in pub_clean.lower() or "britain" in pub_clean.lower():
+                publisher = "Penguin Random House UK"
+            else:
+                publisher = "Penguin Books"
+        elif "dorman" in pub_clean.lower() and "viking" in pub_clean.lower():
+            publisher = "Pamela Dorman Books"
+        else:
+            # Keep original but limit length
+            if len(pub_clean) < 30:
+                publisher = pub_clean
+    
+    # Build filename components
+    components = []
+    
+    # 1. Title (cleaned)
+    title_clean = title.replace("_", " ")  # Don't underscore the title in comprehensive format
+    components.append(title_clean)
+    
+    # 2. Author (if available)
+    if author:
+        components.append(author)
+    
+    # 3. Series info (if available)
+    if series_info:
+        series_part = series_info
+        if series_number:
+            series_part += f", {series_number}"
+        if year:
+            series_part += f", {year}"
+        components.append(series_part)
+    elif year:
+        # Just year if no series info
+        components.append(year)
+    
+    # 4. Publisher (if available and not too long)
+    if publisher:
+        components.append(publisher)
+    
+    # 5. ISBN (if available)
+    if isbn:
+        components.append(isbn)
+    
+    # Join components with " -- "
+    filename_base = " -- ".join(components)
+    
+    # Add file extension
+    file_extension = book_info.format if book_info.format else "epub"
+    final_filename = f"{filename_base}.{file_extension}"
+    
+    # Ensure filename isn't too long (most filesystems limit to 255 characters)
+    if len(final_filename) > 240:  # Leave some buffer
+        logger.warning(f"Filename too long ({len(final_filename)} chars), truncating...")
+        # Keep title and author, truncate other parts
+        essential_parts = [components[0]]  # Always keep title
+        if len(components) > 1 and author:
+            essential_parts.append(components[1])  # Keep author if available
+        
+        remaining_length = 240 - len(" -- ".join(essential_parts)) - len(f".{file_extension}") - 10  # Buffer
+        
+        # Add other components if they fit
+        for component in components[2:]:
+            if len(" -- " + component) <= remaining_length:
+                essential_parts.append(component)
+                remaining_length -= len(" -- " + component)
+            else:
+                break
+        
+        final_filename = " -- ".join(essential_parts) + f".{file_extension}"
+    
+    logger.info(f"Generated comprehensive filename: '{final_filename}'")
+    logger.info(f"=== END FILENAME GENERATION ===")
+    
+    return final_filename
 
 def search_books(query: str, filters: SearchFilters) -> List[Dict[str, Any]]:
     """Search for books matching the query.
@@ -158,26 +315,17 @@ def _download_book_with_cancellation(book_id: str, cancel_flag: Event) -> Option
         book_info = book_queue._book_data[book_id]
         logger.info(f"Starting download: {book_info.title}")
 
-        # Debug logging for filename generation
+        # Generate comprehensive filename
         logger.info(f"=== FILENAME GENERATION DEBUG ===")
         logger.info(f"USE_BOOK_TITLE setting: {USE_BOOK_TITLE} (type: {type(USE_BOOK_TITLE)})")
-        logger.info(f"Raw book title: '{book_info.title}' (type: {type(book_info.title)})")
-        logger.info(f"Book ID: '{book_id}'")
-        logger.info(f"Book format: '{book_info.format}'")
-
-        if USE_BOOK_TITLE and book_info.title and book_info.title.strip():
-            original_title = book_info.title
-            sanitized_title = _sanitize_filename(book_info.title)
-            book_name = sanitized_title
-            logger.info(f"Original title: '{original_title}'")
-            logger.info(f"Sanitized title: '{sanitized_title}'")
-            logger.info(f"Using sanitized book title for filename")
+        
+        if USE_BOOK_TITLE:
+            book_name = _generate_comprehensive_filename(book_info, book_id)
         else:
-            book_name = book_id
-            logger.info(f"Using book ID for filename (USE_BOOK_TITLE={USE_BOOK_TITLE}, title='{book_info.title}')")
-            
-        book_name += f".{book_info.format}"
-        logger.info(f"Final filename with extension: '{book_name}'")
+            book_name = f"{book_id}.{book_info.format}"
+            logger.info(f"Using book ID for filename: '{book_name}'")
+        
+        logger.info(f"Final filename: '{book_name}'")
         logger.info(f"=== END FILENAME DEBUG ===")
         
         book_path = TMP_DIR / book_name
