@@ -20,12 +20,12 @@ jobs:
     strategy:
       matrix:
         include:
-          - suffix: ""
-            target: cwa-bd
-            image_name_suffix: ""
-          - suffix: "-tor"
-            target: cwa-bd-tor
-            image_name_suffix: "-tor"
+          # - suffix: ""
+          #   target: cwa-bd
+          #   image_name_suffix: ""
+          # - suffix: "-tor"
+          #   target: cwa-bd-tor
+          #   image_name_suffix: "-tor"
           - suffix: "-extbp"
             target: cwa-bd-extbp
             image_name_suffix: "-extbp"
