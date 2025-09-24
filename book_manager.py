@@ -169,21 +169,77 @@ def _parse_book_info_page(soup: BeautifulSoup, book_id: str) -> BookInfo:
 
     data = soup.find_all("div", {"class": "main-inner"})[0].find_next("div")
     divs = list(data.children)
-    _details = divs[13].text.strip().lower().split(" · ")
+    
+    # Try to extract format and size from multiple locations
     format = ""
     size = ""
-    for f in _details:
-        if format == "" and f.strip().lower() in SUPPORTED_FORMATS:
-            format = f.strip().lower()
-        if size == "" and any(u in f.strip().lower() for u in ["mb", "kb", "gb"]):
-            size = f.strip().lower()
+    
+    # Strategy 1: Original approach - look at divs[13]
+    try:
+        if len(divs) > 13 and divs[13]:
+            _details = divs[13].text.strip().lower().split(" · ")
+            logger.info(f"Details from divs[13]: {_details}")
+            
+            for f in _details:
+                if format == "" and f.strip().lower() in SUPPORTED_FORMATS:
+                    format = f.strip().lower()
+                if size == "" and any(u in f.strip().lower() for u in ["mb", "kb", "gb"]):
+                    size = f.strip().lower()
 
-    if format == "" or size == "":
-        for f in _details:
-            if f == "" and not " " in f.strip().lower():
-                format = f.strip().lower()
-            if size == "" and "." in f.strip().lower():
-                size = f.strip().lower()
+            if format == "" or size == "":
+                for f in _details:
+                    if format == "" and f.strip() and not " " in f.strip().lower():
+                        potential_format = f.strip().lower()
+                        if potential_format in SUPPORTED_FORMATS:
+                            format = potential_format
+                    if size == "" and "." in f.strip().lower():
+                        size = f.strip().lower()
+    except Exception as e:
+        logger.debug(f"Error extracting from divs[13]: {e}")
+    
+    # Strategy 2: Look through all divs for format/size info
+    if not format or not size:
+        try:
+            for div in divs:
+                if hasattr(div, 'text'):
+                    div_text = div.text.strip().lower()
+                    # Look for format indicators
+                    for fmt in SUPPORTED_FORMATS:
+                        if fmt in div_text and not format:
+                            format = fmt
+                            break
+                    # Look for size indicators  
+                    if any(u in div_text for u in ["mb", "kb", "gb"]) and not size:
+                        # Extract size with regex
+                        import re
+                        size_match = re.search(r'(\d+(?:\.\d+)?\s*(?:mb|kb|gb))', div_text)
+                        if size_match:
+                            size = size_match.group(1)
+                            break
+        except Exception as e:
+            logger.debug(f"Error in format/size strategy 2: {e}")
+    
+    # Strategy 3: Look in download URLs for format hints
+    if not format:
+        try:
+            # We'll extract URLs first, then check them for format clues
+            every_url = soup.find_all("a")
+            for url in every_url:
+                href = url.get('href', '')
+                for fmt in SUPPORTED_FORMATS:
+                    if f'.{fmt}' in href.lower():
+                        format = fmt
+                        break
+                if format:
+                    break
+        except Exception as e:
+            logger.debug(f"Error in format strategy 3: {e}")
+    
+    # Fallback format
+    if not format:
+        format = "epub"  # Default format
+        
+    logger.info(f"Final extracted format: '{format}', size: '{size}'")
 
     every_url = soup.find_all("a")
     slow_urls_no_waitlist = set()
@@ -309,24 +365,96 @@ def _parse_book_info_page(soup: BeautifulSoup, book_id: str) -> BookInfo:
             
         return default
 
+    # Try multiple strategies to extract book information
+    def extract_book_details(soup, divs):
+        """Extract title, author, publisher using multiple strategies."""
+        details = {'title': '', 'author': '', 'publisher': ''}
+        
+        # Strategy 1: Try the original div indices but validate the content
+        strategies = [
+            # (div_index, expected_field)
+            (7, 'title'),
+            (9, 'author'), 
+            (11, 'publisher')
+        ]
+        
+        for div_idx, field in strategies:
+            try:
+                if div_idx < len(divs):
+                    text = safe_get_text(divs[div_idx], "")
+                    if text and len(text) > 2:
+                        details[field] = text
+            except (IndexError, AttributeError):
+                continue
+        
+        # Strategy 2: Look for specific text patterns in the page
+        try:
+            # Find h1 tags which often contain titles
+            h1_tags = soup.find_all('h1')
+            for h1 in h1_tags:
+                text = safe_get_text(h1, "")
+                if text and len(text) > 5 and not details['title']:
+                    details['title'] = text
+                    break
+                    
+            # Look for spans or divs with book-related content
+            potential_titles = soup.find_all(['span', 'div'], text=True)
+            for elem in potential_titles:
+                text = safe_get_text(elem, "").strip()
+                if text and len(text) > 10 and ':' in text and not details['title']:
+                    # Likely a book title if it's long and has a colon
+                    details['title'] = text
+                    break
+                    
+        except Exception as e:
+            logger.debug(f"Error in strategy 2: {e}")
+        
+        # Strategy 3: Extract from metadata if available
+        try:
+            # Look for meta tags or structured data
+            meta_title = soup.find('meta', property='og:title')
+            if meta_title and not details['title']:
+                details['title'] = meta_title.get('content', '')
+                
+            # Look for JSON-LD structured data
+            scripts = soup.find_all('script', type='application/ld+json')
+            for script in scripts:
+                try:
+                    import json
+                    data = json.loads(script.string)
+                    if isinstance(data, dict):
+                        if 'name' in data and not details['title']:
+                            details['title'] = data['name']
+                        if 'author' in data and not details['author']:
+                            author_data = data['author']
+                            if isinstance(author_data, dict) and 'name' in author_data:
+                                details['author'] = author_data['name']
+                            elif isinstance(author_data, str):
+                                details['author'] = author_data
+                except:
+                    continue
+                    
+        except Exception as e:
+            logger.debug(f"Error in strategy 3: {e}")
+            
+        return details
+
+    # Extract book details using multiple strategies
+    book_details = extract_book_details(soup, divs)
+    
     # Extract basic information with error handling
-    try:
-        title = safe_get_text(divs[7], "Unknown Title")
-    except (IndexError, AttributeError):
+    title = book_details['title'] or "Unknown Title"
+    author = book_details['author'] or "Unknown Author"  
+    publisher = book_details['publisher'] or "Unknown Publisher"
+    
+    # Log what we extracted
+    logger.info(f"Extracted book details - Title: '{title}', Author: '{author}', Publisher: '{publisher}'")
+
+    # If title looks like an author name and author is empty, swap them
+    if title and author == "Unknown Author" and len(title.split()) <= 3 and all(word.istitle() for word in title.split()):
+        logger.info(f"Title '{title}' looks like an author name, swapping fields")
+        author = title
         title = "Unknown Title"
-        logger.warning(f"Could not extract title for book ID: {book_id}")
-
-    try:
-        publisher = safe_get_text(divs[11], "Unknown Publisher")
-    except (IndexError, AttributeError):
-        publisher = "Unknown Publisher"
-        logger.warning(f"Could not extract publisher for book ID: {book_id}")
-
-    try:
-        author = safe_get_text(divs[9], "Unknown Author")
-    except (IndexError, AttributeError):
-        author = "Unknown Author"
-        logger.warning(f"Could not extract author for book ID: {book_id}")
 
     # Extract basic information
     book_info = BookInfo(
