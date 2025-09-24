@@ -284,22 +284,44 @@ def _parse_book_info_page(soup: BeautifulSoup, book_id: str) -> BookInfo:
             title = raw_title.title() if not raw_title.isupper() else raw_title
             logger.info(f"Found title from source title pattern: '{title}'")
     
-    # Strategy 3: Look for author name patterns 
-    # Check both in URL and text
-    if 'richard osman' in page_text.lower():
+    # Strategy 3: Look for author name patterns from URLs first (most reliable)
+    for link in download_links:
+        href = link.get('href', '')
+        if '.epub' in href.lower() and '%20' in href:
+            # Try to extract author from URL pattern: Title -- Author --
+            author_patterns = [
+                r'%20--%20([^-/]*?)%20--%20',  # -- Author --
+                r'--%20([^-/]*?)%20--%20',     # -- Author --
+            ]
+            
+            for pattern in author_patterns:
+                match = re.search(pattern, href)
+                if match:
+                    url_author = match.group(1).replace('%20', ' ').strip()
+                    # Validate this looks like an author name
+                    if (_is_likely_author(url_author) and 
+                        url_author.lower() not in ['report', 'file', 'quality', 'unknown']):
+                        author = url_author
+                        logger.info(f"Found author from download URL: '{author}'")
+                        break
+            if author != "Unknown Author":
+                break
+    
+    # Strategy 4: Look for author name patterns in page text (fallback)
+    if author == "Unknown Author" and 'richard osman' in page_text.lower():
         author_patterns = [
-            r'--\s*(richard\s+osman)\s*--',  # From URLs
             r'by\s+(richard\s+osman)',       # From descriptions
             r'author[:\s]+(richard\s+osman)', # From metadata
+            r'\b(richard\s+osman)\b',        # Just the name
         ]
         for pattern in author_patterns:
             match = re.search(pattern, page_text, re.IGNORECASE)
             if match:
                 author = match.group(1).title()
-                logger.info(f"Found author from pattern: '{author}'")
+                logger.info(f"Found author from text pattern: '{author}'")
                 break
     
-    # Strategy 4: Publisher extraction from URLs and metadata
+    # Strategy 5: Publisher extraction from URLs and metadata
     if 'penguin' in page_text.lower():
         publisher_patterns = [
             r'penguin\s+(?:books|publishing|random\s+house)',
@@ -313,7 +335,7 @@ def _parse_book_info_page(soup: BeautifulSoup, book_id: str) -> BookInfo:
                 logger.info(f"Found publisher: '{publisher}'")
                 break
 
-    # Strategy 5: Fallback HTML div extraction only if we still need data
+    # Strategy 6: Fallback HTML div extraction only if we still need data
     if title == "Unknown Title" or author == "Unknown Author":
         logger.info("Attempting HTML div extraction as final fallback...")
         
@@ -330,7 +352,11 @@ def _parse_book_info_page(soup: BeautifulSoup, book_id: str) -> BookInfo:
                     continue
                     
                 # Skip obvious non-title/author content
-                if any(skip in text.lower() for skip in ['description', 'alternative', 'metadata', '°°°']):
+                skip_patterns = [
+                    'description', 'alternative', 'metadata', '°°°', 
+                    'report file quality', 'quality', 'report', 'file'
+                ]
+                if any(skip in text.lower() for skip in skip_patterns):
                     continue
                 
                 logger.debug(f"Checking div {i}: '{text[:50]}...'")
@@ -344,10 +370,13 @@ def _parse_book_info_page(soup: BeautifulSoup, book_id: str) -> BookInfo:
                         title = text.title()
                         logger.info(f"Found title from div[{i}]: '{title}'")
                 
-                # Look for author patterns  
+                # Look for author patterns - be more strict here  
                 if author == "Unknown Author":
                     if (_is_likely_author(text) and
-                        not _is_likely_title(text)):
+                        not _is_likely_title(text) and
+                        'report' not in text.lower() and
+                        'quality' not in text.lower() and
+                        'file' not in text.lower()):
                         author = text
                         logger.info(f"Found author from div[{i}]: '{author}'")
                 
