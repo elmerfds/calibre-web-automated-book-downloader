@@ -243,39 +243,71 @@ def _parse_book_info_page(soup: BeautifulSoup, book_id: str) -> BookInfo:
         if div_element is None:
             return default
         
-        # Try to get the next sibling text
+        # First try to get the text content directly from the element
+        if hasattr(div_element, 'get_text'):
+            try:
+                text = div_element.get_text(strip=True)
+                if text and not text.startswith('span') and 'class' not in text.lower():
+                    return text
+            except:
+                pass
+        
+        if hasattr(div_element, 'text'):
+            try:
+                text = div_element.text.strip()
+                if text and not text.startswith('span') and 'class' not in text.lower():
+                    return text
+            except:
+                pass
+        
+        # Try to get the next sibling text (original approach) but validate it
         if hasattr(div_element, 'next') and div_element.next is not None:
             next_element = div_element.next
             if hasattr(next_element, 'strip') and callable(getattr(next_element, 'strip')):
                 try:
-                    return next_element.strip()
+                    text = next_element.strip()
+                    # Validate that we're not getting HTML/CSS artifacts
+                    if text and not text.startswith('span') and 'class' not in text.lower() and len(text) > 3:
+                        return text
                 except:
                     pass
             else:
                 try:
-                    return str(next_element).strip()
+                    text = str(next_element).strip()
+                    # Validate that we're not getting HTML/CSS artifacts
+                    if text and not text.startswith('span') and 'class' not in text.lower() and len(text) > 3:
+                        return text
                 except:
                     pass
         
-        # Try to get text from the element itself
-        if hasattr(div_element, 'text'):
+        # Try finding text in child elements
+        if hasattr(div_element, 'find_all'):
             try:
-                return div_element.text.strip()
+                # Look for text nodes that aren't in span elements with classes
+                text_elements = div_element.find_all(text=True)
+                for text_elem in text_elements:
+                    if text_elem.strip() and not text_elem.strip().startswith('span') and 'class' not in text_elem.strip().lower():
+                        text = text_elem.strip()
+                        if len(text) > 3:  # Ensure it's not just punctuation
+                            return text
             except:
                 pass
         
-        # Try get_text method
-        if hasattr(div_element, 'get_text'):
-            try:
-                return div_element.get_text().strip()
-            except:
-                pass
-        
-        # Last resort - convert to string
+        # Last resort - convert to string but validate
         try:
-            return str(div_element).strip()
+            text = str(div_element).strip()
+            # If it contains HTML tags, try to extract just the text
+            if '<' in text and '>' in text:
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(text, 'html.parser')
+                text = soup.get_text(strip=True)
+            
+            if text and not text.startswith('span') and 'class' not in text.lower() and len(text) > 3:
+                return text
         except:
-            return default
+            pass
+            
+        return default
 
     # Extract basic information with error handling
     try:
