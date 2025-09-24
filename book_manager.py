@@ -370,7 +370,24 @@ def _parse_book_info_page(soup: BeautifulSoup, book_id: str) -> BookInfo:
         """Extract title, author, publisher using multiple strategies."""
         details = {'title': '', 'author': '', 'publisher': ''}
         
-        # Strategy 1: Try the original div indices but validate the content
+        # Strategy 1: Look for "source title:" in the metadata text
+        try:
+            page_text = soup.get_text().lower()
+            if 'source title:' in page_text:
+                # Extract the line containing source title
+                lines = page_text.split('\n')
+                for line in lines:
+                    if 'source title:' in line:
+                        title_part = line.split('source title:')[1].strip()
+                        # Clean up the title
+                        if title_part:
+                            details['title'] = title_part.title()
+                            logger.info(f"Found title from source title: {details['title']}")
+                            break
+        except Exception as e:
+            logger.debug(f"Error in source title strategy: {e}")
+        
+        # Strategy 2: Try the original div indices but validate the content
         strategies = [
             # (div_index, expected_field)
             (7, 'title'),
@@ -380,62 +397,64 @@ def _parse_book_info_page(soup: BeautifulSoup, book_id: str) -> BookInfo:
         
         for div_idx, field in strategies:
             try:
-                if div_idx < len(divs):
+                if div_idx < len(divs) and not details[field]:
                     text = safe_get_text(divs[div_idx], "")
                     if text and len(text) > 2:
                         details[field] = text
             except (IndexError, AttributeError):
                 continue
         
-        # Strategy 2: Look for specific text patterns in the page
-        try:
-            # Find h1 tags which often contain titles
-            h1_tags = soup.find_all('h1')
-            for h1 in h1_tags:
-                text = safe_get_text(h1, "")
-                if text and len(text) > 5 and not details['title']:
-                    details['title'] = text
-                    break
-                    
-            # Look for spans or divs with book-related content
-            potential_titles = soup.find_all(['span', 'div'], text=True)
-            for elem in potential_titles:
-                text = safe_get_text(elem, "").strip()
-                if text and len(text) > 10 and ':' in text and not details['title']:
-                    # Likely a book title if it's long and has a colon
-                    details['title'] = text
-                    break
-                    
-        except Exception as e:
-            logger.debug(f"Error in strategy 2: {e}")
+        # Strategy 3: Look for specific text patterns in the page
+        if not details['title']:
+            try:
+                # Find h1 tags which often contain titles
+                h1_tags = soup.find_all('h1')
+                for h1 in h1_tags:
+                    text = safe_get_text(h1, "")
+                    if text and len(text) > 5:
+                        details['title'] = text
+                        break
+                        
+                # Look for spans or divs with book-related content
+                potential_titles = soup.find_all(['span', 'div'], text=True)
+                for elem in potential_titles:
+                    text = safe_get_text(elem, "").strip()
+                    if text and len(text) > 10 and ':' in text:
+                        # Likely a book title if it's long and has a colon
+                        details['title'] = text
+                        break
+                        
+            except Exception as e:
+                logger.debug(f"Error in strategy 3: {e}")
         
-        # Strategy 3: Extract from metadata if available
-        try:
-            # Look for meta tags or structured data
-            meta_title = soup.find('meta', property='og:title')
-            if meta_title and not details['title']:
-                details['title'] = meta_title.get('content', '')
-                
-            # Look for JSON-LD structured data
-            scripts = soup.find_all('script', type='application/ld+json')
-            for script in scripts:
-                try:
-                    import json
-                    data = json.loads(script.string)
-                    if isinstance(data, dict):
-                        if 'name' in data and not details['title']:
-                            details['title'] = data['name']
-                        if 'author' in data and not details['author']:
-                            author_data = data['author']
-                            if isinstance(author_data, dict) and 'name' in author_data:
-                                details['author'] = author_data['name']
-                            elif isinstance(author_data, str):
-                                details['author'] = author_data
-                except:
-                    continue
+        # Strategy 4: Extract from metadata if available
+        if not details['title']:
+            try:
+                # Look for meta tags or structured data
+                meta_title = soup.find('meta', property='og:title')
+                if meta_title:
+                    details['title'] = meta_title.get('content', '')
                     
-        except Exception as e:
-            logger.debug(f"Error in strategy 3: {e}")
+                # Look for JSON-LD structured data
+                scripts = soup.find_all('script', type='application/ld+json')
+                for script in scripts:
+                    try:
+                        import json
+                        data = json.loads(script.string)
+                        if isinstance(data, dict):
+                            if 'name' in data:
+                                details['title'] = data['name']
+                            if 'author' in data and not details['author']:
+                                author_data = data['author']
+                                if isinstance(author_data, dict) and 'name' in author_data:
+                                    details['author'] = author_data['name']
+                                elif isinstance(author_data, str):
+                                    details['author'] = author_data
+                    except:
+                        continue
+                        
+            except Exception as e:
+                logger.debug(f"Error in strategy 4: {e}")
             
         return details
 
