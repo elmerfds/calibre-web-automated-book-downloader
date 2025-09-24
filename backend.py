@@ -15,6 +15,7 @@ from config import CUSTOM_SCRIPT
 from env import INGEST_DIR, TMP_DIR, MAIN_LOOP_SLEEP_TIME, USE_BOOK_TITLE, MAX_CONCURRENT_DOWNLOADS, DOWNLOAD_PROGRESS_UPDATE_INTERVAL
 from models import book_queue, BookInfo, QueueStatus, SearchFilters
 import book_manager
+import downloader
 
 logger = setup_logger(__name__)
 
@@ -42,18 +43,293 @@ def _sanitize_filename(filename: str) -> str:
     
     return sanitized
 
+def _extract_metadata_from_download_url(url: str) -> Dict[str, str]:
+    """Extract book metadata from the final download URL."""
+    metadata = {}
+    
+    # Decode URL-encoded characters
+    decoded_url = url.replace('%20', ' ').replace('%2C', ',').replace('%3A', ':')
+    
+    # Pattern: Title -- Author -- Location, Year -- Publisher -- ISBN
+    # Example: Then She Was Gone -- Lisa Jewell -- New York, 2017 -- Penguin Random House UK -- 9781473538337
+    full_pattern = r'/([^/]+?)\s*--\s*([^/]+?)\s*--\s*([^/]+?)\s*--\s*([^/]+?)\s*--\s*([^/]+?)(?:\s*--|\s*\.epub)'
+    
+    match = re.search(full_pattern, decoded_url)
+    if match:
+        title = match.group(1).strip()
+        author = match.group(2).strip() 
+        location_year = match.group(3).strip()
+        publisher = match.group(4).strip()
+        isbn_or_more = match.group(5).strip()
+        
+        # Extract year from location_year
+        year_match = re.search(r'\b(19|20)\d{2}\b', location_year)
+        year = year_match.group(0) if year_match else ""
+        
+        # Extract ISBN from isbn_or_more
+        isbn_match = re.search(r'\b(97[89]\d{10}|\d{9}[\dX])\b', isbn_or_more)
+        isbn = isbn_match.group(0) if isbn_match else ""
+        
+        if _is_valid_title(title):
+            metadata['title'] = title
+        if _is_valid_author(author):
+            metadata['author'] = author
+        if year:
+            metadata['year'] = year
+        if publisher:
+            metadata['publisher'] = publisher
+        if isbn:
+            metadata['isbn'] = isbn
+            
+        logger.info(f"Extracted from download URL - Title: '{title}', Author: '{author}', Year: '{year}', Publisher: '{publisher}', ISBN: '{isbn}'")
+        
+        return metadata
+    
+    # Fallback patterns for simpler URL structures
+    simpler_patterns = [
+        r'/([^/]+?)\s*--\s*([^/]+?)\s*--\s*([^/]+?)\.epub',  # Title -- Author -- Info.epub
+        r'/([^/]+?)\s*--\s*([^/]+?)\.epub',                   # Title -- Author.epub
+    ]
+    
+    for pattern in simpler_patterns:
+        match = re.search(pattern, decoded_url)
+        if match:
+            title = match.group(1).strip()
+            author = match.group(2).strip()
+            
+            if _is_valid_title(title):
+                metadata['title'] = title
+            if _is_valid_author(author):
+                metadata['author'] = author
+                
+            logger.info(f"Extracted from simple URL pattern - Title: '{title}', Author: '{author}'")
+            break
+    
+    return metadata
+
+def _is_valid_title(text: str) -> bool:
+    """Check if text could be a valid book title."""
+    if not text or len(text.strip()) < 3:
+        return False
+    
+    text = text.strip()
+    
+    # Reject obvious non-titles using generic patterns
+    reject_patterns = [
+        r'^\d{4}$',                                    # Just a year
+        r'^[A-Z][a-z]+ Books,?\s*\d{4}$',            # "Publisher Books, Year"
+        r'^\w+\s+\[\w+\]',                            # "Language [code]"
+        r'\b(epub|pdf|mobi|azw3|fb2|djvu|cbz|cbr)\b', # File formats
+        r'\breport\b.*\bquality\b',                   # UI elements
+        r'^\w+/.*/',                                  # File paths
+    ]
+    
+    return not any(re.search(pattern, text, re.IGNORECASE) for pattern in reject_patterns)
+
+def _is_valid_author(text: str) -> bool:
+    """Check if text could be a valid author name."""
+    if not text or len(text.strip()) < 2:
+        return False
+    
+    text = text.strip()
+    words = text.split()
+    
+    # Reject obvious non-authors
+    reject_patterns = [
+        r'^\d{4}$',                                    # Just a year
+        r'^[A-Z][a-z]+ Books,?\s*\d{4}$',            # "Publisher Books, Year"
+        r'\b(epub|pdf|mobi|azw3|fb2|djvu|cbz|cbr)\b', # File formats
+        r'\breport\b.*\bquality\b',                   # UI elements
+        r'\bunknown\b',                               # "Unknown" placeholder
+    ]
+    
+    if any(re.search(pattern, text, re.IGNORECASE) for pattern in reject_patterns):
+        return False
+    
+    # Check if it looks like a proper name (1-4 words, proper capitalization)
+    if 1 <= len(words) <= 4:
+        name_pattern = r'^[A-Z][a-z]+\.?$'  # Allow initials
+        return all(re.match(name_pattern, word) for word in words)
+    
+    return False
+
+def _resolve_download_url_for_metadata(link: str) -> Optional[str]:
+    """Try to resolve a download link to get the actual download URL without downloading.
+    
+    This is a simplified version of book_manager._get_download_url that focuses on
+    getting the URL for metadata extraction purposes only.
+    """
+    try:
+        logger.debug(f"Resolving download URL for metadata: {link}")
+        
+        # Handle direct donator API links
+        if "/dyn/api/fast_download.json" in link:
+            try:
+                import json
+                page = downloader.html_get_page(link)
+                if page:
+                    response_data = json.loads(page)
+                    download_url = response_data.get("download_url", "")
+                    if download_url:
+                        logger.debug(f"Got donator download URL: {download_url}")
+                        return download_url
+            except Exception as e:
+                logger.debug(f"Failed to resolve donator API URL: {e}")
+                return None
+        
+        # Get the page HTML
+        html = downloader.html_get_page(link)
+        if not html:
+            logger.debug(f"No HTML content received from {link}")
+            return None
+
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, "html.parser")
+
+        # Handle different types of download pages
+        if link.startswith("https://z-lib."):
+            download_link = soup.find_all("a", href=True, class_="addDownloadedBook")
+            if download_link:
+                resolved_url = download_link[0]["href"]
+                logger.debug(f"Resolved Z-Library URL: {resolved_url}")
+                return resolved_url
+                
+        elif "/slow_download/" in link:
+            download_links = soup.find_all("a", href=True, string="📚 Download now")
+            if download_links:
+                resolved_url = download_links[0]["href"]
+                logger.debug(f"Resolved slow download URL: {resolved_url}")
+                return resolved_url
+            else:
+                # Check if there's a countdown - if so, we can't resolve it quickly
+                countdown = soup.find_all("span", class_="js-partner-countdown")
+                if countdown:
+                    logger.debug(f"Download has countdown, skipping URL resolution for metadata")
+                    return None
+                    
+        else:
+            # Generic case - look for GET links
+            get_links = soup.find_all("a", string="GET")
+            if get_links:
+                resolved_url = get_links[0]["href"]
+                logger.debug(f"Resolved generic download URL: {resolved_url}")
+                return resolved_url
+
+        logger.debug(f"Could not resolve download URL from {link}")
+        return None
+        
+    except Exception as e:
+        logger.debug(f"Exception resolving download URL {link}: {e}")
+        return None
+
+def _get_corrected_metadata_from_urls(book_info: BookInfo) -> Dict[str, str]:
+    """Try to resolve download URLs early and extract metadata for filename generation.
+    
+    Returns:
+        Dict with corrected metadata fields, empty if extraction fails
+    """
+    logger.info(f"=== EARLY URL METADATA EXTRACTION ===")
+    logger.info(f"Book ID: {book_info.id}, Current title: '{book_info.title}', Current author: '{book_info.author}'")
+    
+    if not book_info.download_urls:
+        logger.info("No download URLs available, fetching book info...")
+        try:
+            # Refresh book info to get download URLs
+            updated_book_info = book_manager.get_book_info(book_info.id)
+            book_info.download_urls = updated_book_info.download_urls
+        except Exception as e:
+            logger.debug(f"Failed to refresh book info: {e}")
+            return {}
+    
+    if not book_info.download_urls:
+        logger.info("Still no download URLs available, cannot extract metadata early")
+        return {}
+    
+    # Try to resolve URLs and extract metadata
+    corrected_metadata = {}
+    urls_tried = 0
+    max_urls_to_try = min(3, len(book_info.download_urls))  # Limit to 3 URLs to avoid too much delay
+    
+    logger.info(f"Attempting to resolve {max_urls_to_try} URLs for metadata extraction...")
+    
+    for link in book_info.download_urls[:max_urls_to_try]:
+        urls_tried += 1
+        logger.debug(f"Trying URL {urls_tried}/{max_urls_to_try}: {link}")
+        
+        try:
+            # Try to resolve the download URL
+            resolved_url = _resolve_download_url_for_metadata(link)
+            
+            if resolved_url:
+                # Extract metadata from the resolved URL
+                url_metadata = _extract_metadata_from_download_url(resolved_url)
+                
+                if url_metadata:
+                    logger.info(f"Successfully extracted metadata from URL {urls_tried}: {url_metadata}")
+                    corrected_metadata.update(url_metadata)
+                    
+                    # If we got title and author, that's usually sufficient
+                    if 'title' in url_metadata and 'author' in url_metadata:
+                        logger.info("Got both title and author, stopping URL resolution")
+                        break
+                        
+        except Exception as e:
+            logger.debug(f"Error processing URL {urls_tried}: {e}")
+            continue
+    
+    logger.info(f"=== EARLY METADATA EXTRACTION COMPLETE ===")
+    logger.info(f"Corrected metadata found: {corrected_metadata}")
+    
+    return corrected_metadata
+
 def _generate_comprehensive_filename(book_info: BookInfo, book_id: str) -> str:
-    """Generate a comprehensive filename with title, author, series, year, publisher, and ISBN."""
+    """Generate a comprehensive filename with title, author, series, year, publisher, and ISBN.
+    
+    NEW: Now attempts early URL resolution to get correct metadata before filename generation.
+    """
     
     logger.info(f"=== COMPREHENSIVE FILENAME GENERATION ===")
     logger.info(f"Book ID: '{book_id}'")
-    logger.info(f"Title: '{book_info.title}'")
-    logger.info(f"Author: '{book_info.author}'")
-    logger.info(f"Publisher: '{book_info.publisher}'")
-    logger.info(f"Year: '{book_info.year}'")
+    logger.info(f"Original Title: '{book_info.title}'")
+    logger.info(f"Original Author: '{book_info.author}'")
+    logger.info(f"Original Publisher: '{book_info.publisher}'")
+    logger.info(f"Original Year: '{book_info.year}'")
     logger.info(f"Format: '{book_info.format}'")
-    logger.info(f"Additional info: {book_info.info}")
     
+    # STEP 1: Try to get corrected metadata from download URLs
+    corrected_metadata = _get_corrected_metadata_from_urls(book_info)
+    
+    # STEP 2: Apply corrected metadata to book_info
+    if corrected_metadata:
+        logger.info("=== APPLYING CORRECTED METADATA ===")
+        
+        if 'title' in corrected_metadata and (book_info.title == "Unknown Title" or not book_info.title):
+            old_title = book_info.title
+            book_info.title = corrected_metadata['title']
+            logger.info(f"Corrected title: '{old_title}' -> '{book_info.title}'")
+            
+        if 'author' in corrected_metadata and (book_info.author == "Unknown Author" or not book_info.author):
+            old_author = book_info.author
+            book_info.author = corrected_metadata['author']
+            logger.info(f"Corrected author: '{old_author}' -> '{book_info.author}'")
+            
+        if 'year' in corrected_metadata and not book_info.year:
+            book_info.year = corrected_metadata['year']
+            logger.info(f"Added year: '{book_info.year}'")
+            
+        if 'publisher' in corrected_metadata and (book_info.publisher == "Unknown Publisher" or not book_info.publisher):
+            old_publisher = book_info.publisher
+            book_info.publisher = corrected_metadata['publisher']
+            logger.info(f"Corrected publisher: '{old_publisher}' -> '{book_info.publisher}'")
+            
+        if 'isbn' in corrected_metadata:
+            if not book_info.info or 'ISBN' not in book_info.info:
+                book_info.info = {'ISBN': [corrected_metadata['isbn']]}
+            logger.info(f"Added ISBN: '{corrected_metadata['isbn']}'")
+    else:
+        logger.info("No corrected metadata found from URLs, using original book info")
+    
+    # STEP 3: Generate filename using (potentially corrected) metadata
     # Start with title
     title = book_info.title if book_info.title and book_info.title != "Unknown Title" else "Unknown_Title"
     
@@ -315,7 +591,7 @@ def _download_book_with_cancellation(book_id: str, cancel_flag: Event) -> Option
         book_info = book_queue._book_data[book_id]
         logger.info(f"Starting download: {book_info.title}")
 
-        # Generate comprehensive filename
+        # Generate comprehensive filename (now with early URL resolution)
         logger.info(f"=== FILENAME GENERATION DEBUG ===")
         logger.info(f"USE_BOOK_TITLE setting: {USE_BOOK_TITLE} (type: {type(USE_BOOK_TITLE)})")
         

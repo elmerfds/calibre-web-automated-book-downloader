@@ -327,73 +327,12 @@ def _get_download_urls_from_welib(book_id: str) -> set[str]:
         return set()
 
 
-def _extract_metadata_from_download_url(url: str) -> Dict[str, str]:
-    """Extract book metadata from the final download URL."""
-    metadata = {}
-    
-    # Decode URL-encoded characters
-    decoded_url = url.replace('%20', ' ').replace('%2C', ',').replace('%3A', ':')
-    
-    # Pattern: Title -- Author -- Location, Year -- Publisher -- ISBN
-    # Example: Then She Was Gone -- Lisa Jewell -- New York, 2017 -- Penguin Random House UK -- 9781473538337
-    full_pattern = r'/([^/]+?)\s*--\s*([^/]+?)\s*--\s*([^/]+?)\s*--\s*([^/]+?)\s*--\s*([^/]+?)(?:\s*--|\s*\.epub)'
-    
-    match = re.search(full_pattern, decoded_url)
-    if match:
-        title = match.group(1).strip()
-        author = match.group(2).strip() 
-        location_year = match.group(3).strip()
-        publisher = match.group(4).strip()
-        isbn_or_more = match.group(5).strip()
-        
-        # Extract year from location_year
-        year_match = re.search(r'\b(19|20)\d{2}\b', location_year)
-        year = year_match.group(0) if year_match else ""
-        
-        # Extract ISBN from isbn_or_more
-        isbn_match = re.search(r'\b(97[89]\d{10}|\d{9}[\dX])\b', isbn_or_more)
-        isbn = isbn_match.group(0) if isbn_match else ""
-        
-        if _is_valid_title(title):
-            metadata['title'] = title
-        if _is_valid_author(author):
-            metadata['author'] = author
-        if year:
-            metadata['year'] = year
-        if publisher:
-            metadata['publisher'] = publisher
-        if isbn:
-            metadata['isbn'] = isbn
-            
-        logger.info(f"Extracted from download URL - Title: '{title}', Author: '{author}', Year: '{year}', Publisher: '{publisher}', ISBN: '{isbn}'")
-        
-        return metadata
-    
-    # Fallback patterns for simpler URL structures
-    simpler_patterns = [
-        r'/([^/]+?)\s*--\s*([^/]+?)\s*--\s*([^/]+?)\.epub',  # Title -- Author -- Info.epub
-        r'/([^/]+?)\s*--\s*([^/]+?)\.epub',                   # Title -- Author.epub
-    ]
-    
-    for pattern in simpler_patterns:
-        match = re.search(pattern, decoded_url)
-        if match:
-            title = match.group(1).strip()
-            author = match.group(2).strip()
-            
-            if _is_valid_title(title):
-                metadata['title'] = title
-            if _is_valid_author(author):
-                metadata['author'] = author
-                
-            logger.info(f"Extracted from simple URL pattern - Title: '{title}', Author: '{author}'")
-            break
-    
-    return metadata
-
-
 def download_book(book_info: BookInfo, book_path: Path, progress_callback: Optional[Callable[[float], None]] = None, cancel_flag: Optional[Event] = None) -> bool:
-    """Download a book from available sources."""
+    """Download a book from available sources.
+    
+    Note: Metadata correction now happens earlier in the process (during filename generation),
+    so this function focuses purely on downloading the file.
+    """
     if len(book_info.download_urls) == 0:
         book_info = get_book_info(book_info.id)
     
@@ -408,31 +347,7 @@ def download_book(book_info: BookInfo, book_path: Path, progress_callback: Optio
             if download_url:
                 logger.info(f"Downloading `{book_info.title}` from `{download_url}`")
                 
-                # VALIDATION STEP: Extract metadata from final download URL
-                url_metadata = _extract_metadata_from_download_url(download_url)
-                
-                # Update book_info with corrected metadata if found
-                if url_metadata.get('title') and book_info.title == "Unknown Title":
-                    book_info.title = url_metadata['title']
-                    logger.info(f"Corrected title from download URL: '{book_info.title}'")
-                    
-                if url_metadata.get('author') and book_info.author == "Unknown Author":
-                    book_info.author = url_metadata['author']  
-                    logger.info(f"Corrected author from download URL: '{book_info.author}'")
-                    
-                if url_metadata.get('year') and not book_info.year:
-                    book_info.year = url_metadata['year']
-                    logger.info(f"Added year from download URL: '{book_info.year}'")
-                    
-                if url_metadata.get('publisher') and book_info.publisher == "Unknown Publisher":
-                    book_info.publisher = url_metadata['publisher']
-                    logger.info(f"Corrected publisher from download URL: '{book_info.publisher}'")
-                    
-                if url_metadata.get('isbn'):
-                    if not book_info.info or 'ISBN' not in book_info.info:
-                        book_info.info = {'ISBN': [url_metadata['isbn']]}
-                    logger.info(f"Added ISBN from download URL: '{url_metadata['isbn']}'")
-                
+                # Download the file (metadata correction now happens earlier in the process)
                 data = downloader.download_url(download_url, book_info.size or "", progress_callback, cancel_flag)
                 if data:
                     with open(book_path, "wb") as f:
