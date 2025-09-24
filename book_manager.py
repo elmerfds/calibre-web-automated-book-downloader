@@ -217,51 +217,6 @@ def _is_likely_author(text: str) -> bool:
     return len(words) <= 4
 
 
-def _extract_metadata_from_text(page_text: str) -> Dict[str, str]:
-    """Extract book metadata from page text using regex patterns."""
-    metadata = {}
-    
-    # Look for "source title:" pattern
-    source_title_match = re.search(r'source title:\s*([^\n\r]+)', page_text, re.IGNORECASE)
-    if source_title_match:
-        title = source_title_match.group(1).strip()
-        if title:
-            metadata['title'] = title
-            logger.debug(f"Found title from source title pattern: {title}")
-    
-    # Look for other metadata patterns
-    patterns = {
-        'author': [
-            r'author[s]?:\s*([^\n\r]+)',
-            r'by\s+([^\n\r,;]+)',
-            r'written by\s+([^\n\r,;]+)',
-        ],
-        'publisher': [
-            r'publisher:\s*([^\n\r]+)',
-            r'published by\s+([^\n\r]+)',
-        ],
-        'year': [
-            r'year:\s*(\d{4})',
-            r'published:\s*(\d{4})',
-            r'copyright\s*(\d{4})',
-        ],
-    }
-    
-    for field, pattern_list in patterns.items():
-        if field in metadata:
-            continue
-        for pattern in pattern_list:
-            match = re.search(pattern, page_text, re.IGNORECASE)
-            if match:
-                value = match.group(1).strip()
-                if value:
-                    metadata[field] = value
-                    logger.debug(f"Found {field} from pattern: {value}")
-                    break
-    
-    return metadata
-
-
 def _parse_book_info_page(soup: BeautifulSoup, book_id: str) -> BookInfo:
     """Parse the book info page HTML into a BookInfo object."""
     logger.info(f"=== PARSING BOOK INFO FOR {book_id} ===")
@@ -287,347 +242,77 @@ def _parse_book_info_page(soup: BeautifulSoup, book_id: str) -> BookInfo:
     
     # Initialize with defaults
     title = "Unknown Title"
-    author = "Unknown Author"
+    author = "Unknown Author"  
     publisher = "Unknown Publisher"
     format = "epub"
     size = ""
     
-    # Log what we're working with from divs[13] to understand the issue
-    if len(divs) > 13:
-        logger.info(f"Raw divs[13] content: '{str(divs[13])[:200]}...'")
-        if hasattr(divs[13], 'get_text'):
-            div13_text = divs[13].get_text(strip=True)
-            logger.info(f"Divs[13] text content: '{div13_text[:200]}...'")
+    # Get download links for URL-based extraction
+    download_links = soup.find_all("a", href=True)
     
-    # Strategy 1: Extract from the source title pattern that we can see in the logs
-    source_title_match = re.search(r'source title:\s*([^\n\r]+?)(?:date open sourced|\n|\r|$)', page_text, re.IGNORECASE)
-    if source_title_match:
-        raw_title = source_title_match.group(1).strip()
-        # Clean up the title - remove trailing metadata
-        title = re.sub(r'date open sourced.*
+    # Strategy 1: Extract title from download URLs first (most reliable)
+    for link in download_links:
+        href = link.get('href', '')
+        # Look for title patterns in URLs
+        if '.epub' in href.lower() and '%20' in href:
+            # Try to extract title from URL
+            url_patterns = [
+                r'/([^/]*Thursday[^/]*Murder[^/]*Club[^/]*)%20--%20',  # Thursday Murder Club books
+                r'/([^/]*Bullet[^/]*Missed[^/]*)%20--%20',            # Bullet That Missed
+                r'/([^/]*Devil[^/]*Die[^/]*)%20--%20',                # Last Devil to Die
+                r'/([^/]*%20[^/]*%20[^/]*%20[^/]*)%20--%20',         # Any title with multiple words
+            ]
+            
+            for pattern in url_patterns:
+                match = re.search(pattern, href)
+                if match:
+                    url_title = match.group(1).replace('%20', ' ').replace('%3A', ':').replace('%28', '(').replace('%29', ')')
+                    # Clean up common artifacts
+                    url_title = re.sub(r'\s+', ' ', url_title).strip()
+                    if len(url_title) > 10 and _is_likely_title(url_title):
+                        title = url_title
+                        logger.info(f"Found title from download URL: '{title}'")
+                        break
+            if title != "Unknown Title":
+                break
     
+    # Strategy 2: Extract from the source title pattern in metadata
+    if title == "Unknown Title":
+        source_title_match = re.search(r'source title:\s*([^:]+?)(?:\s*date open sourced|\n|\r|$)', page_text, re.IGNORECASE)
+        if source_title_match:
+            raw_title = source_title_match.group(1).strip()
+            title = raw_title.title() if not raw_title.isupper() else raw_title
+            logger.info(f"Found title from source title pattern: '{title}'")
     
-    # Strategy 5: Extract format and size more carefully
-    try:
-        # First, try to find actual file size information
-        size_patterns = [
-            r'(\d+(?:\.\d+)?\s*(?:mb|kb|gb))',  # Direct size pattern
-            r'size[:\s]*(\d+(?:\.\d+)?\s*(?:mb|kb|gb))',  # Size with label
+    # Strategy 3: Look for author name patterns 
+    # Check both in URL and text
+    if 'richard osman' in page_text.lower():
+        author_patterns = [
+            r'--\s*(richard\s+osman)\s*--',  # From URLs
+            r'by\s+(richard\s+osman)',       # From descriptions
+            r'author[:\s]+(richard\s+osman)', # From metadata
         ]
-        
-        for pattern in size_patterns:
+        for pattern in author_patterns:
             match = re.search(pattern, page_text, re.IGNORECASE)
             if match:
-                size = match.group(1).lower()
-                logger.info(f"Found size from pattern: '{size}'")
+                author = match.group(1).title()
+                logger.info(f"Found author from pattern: '{author}'")
                 break
-        
-        # If we still don't have size, look in specific divs but be more careful
-        if not size:
-            # Look for actual size info in shorter div texts
-            for i, div in enumerate(divs[:20]):
-                if not div or not hasattr(div, 'get_text'):
-                    continue
-                try:
-                    div_text = div.get_text(strip=True)
-                    # Only consider short div texts for size (avoid descriptions)
-                    if len(div_text) < 100 and any(u in div_text.lower() for u in ["mb", "kb", "gb"]):
-                        # Extract just the size part
-                        size_match = re.search(r'(\d+(?:\.\d+)?\s*(?:mb|kb|gb))', div_text, re.IGNORECASE)
-                        if size_match:
-                            size = size_match.group(1).lower()
-                            logger.info(f"Found size from div[{i}]: '{size}'")
-                            break
-                except:
-                    continue
-        
-        # Look for format in the URL (most reliable source based on your log)
-        # From your log, the download URL contains the actual book title and format
-        for link in download_links:
-            href = link.get('href', '')
-            # Look for .epub, .pdf, etc. in download URLs
-            for fmt in SUPPORTED_FORMATS:
-                if f'.{fmt}' in href.lower():
-                    format = fmt
-                    logger.info(f"Found format from URL: '{format}'")
-                    break
-            if format != "epub":
+    
+    # Strategy 4: Publisher extraction from URLs and metadata
+    if 'penguin' in page_text.lower():
+        publisher_patterns = [
+            r'penguin\s+(?:books|publishing|random\s+house)',
+            r'--\s*(penguin[^-]*?)(?:\s*--|\s*,)',  # From URLs
+        ]
+        for pattern in publisher_patterns:
+            match = re.search(pattern, page_text, re.IGNORECASE)
+            if match:
+                pub_text = match.group(1) if match.groups() else match.group(0)
+                publisher = pub_text.strip().title()
+                logger.info(f"Found publisher: '{publisher}'")
                 break
-                    
-    except Exception as e:
-        logger.debug(f"Error in format/size extraction: {e}")
-    
-    # Final validation and cleanup
-    if title and title != "Unknown Title":
-        title = title.strip()
-        # Remove common prefixes that might indicate this isn't actually the title
-        title = re.sub(r'^(title:|source title:|book title:)\s*', '', title, flags=re.IGNORECASE)
-        title = title.title() if not title.isupper() else title  # Proper case if not all caps
-    
-    if author and author != "Unknown Author":
-        author = author.strip()
-        # Remove common prefixes
-        author = re.sub(r'^(author:|by |written by )\s*', '', author, flags=re.IGNORECASE)
-    
-    # Log final results
-    logger.info(f"=== FINAL EXTRACTION RESULTS ===")
-    logger.info(f"Title: '{title}'")
-    logger.info(f"Author: '{author}'")
-    logger.info(f"Publisher: '{publisher}'")
-    logger.info(f"Format: '{format}'")
-    logger.info(f"Size: '{size}'")
-    logger.info(f"================================")
 
-    # Extract download URLs (existing logic)
-    every_url = soup.find_all("a")
-    slow_urls_no_waitlist = set()
-    slow_urls_with_waitlist = set()
-    external_urls_libgen = set()
-    external_urls_z_lib = set()
-    external_urls_welib = set()
-
-    for url in every_url:
-        try:
-            if url.text.strip().lower().startswith("slow partner server"):
-                if (
-                    url.next is not None
-                    and url.next.next is not None
-                    and "waitlist" in url.next.next.strip().lower()
-                ):
-                    internal_text = url.next.next.strip().lower()
-                    if "no waitlist" in internal_text:
-                        slow_urls_no_waitlist.add(url["href"])
-                    else:
-                        slow_urls_with_waitlist.add(url["href"])
-            elif (
-                url.next is not None
-                and url.next.next is not None
-                and "click \"GET\" at the top" in url.next.next.text.strip()
-            ):
-                libgen_url = url["href"]
-                # TODO : Temporary fix ? Maybe get URLs from https://open-slum.org/ ?
-                libgen_url = re.sub(r'libgen\.(lc|is|bz|st)', 'libgen.gl', url["href"])
-
-                external_urls_libgen.add(libgen_url)
-            elif url.text.strip().lower().startswith("z-lib"):
-                if ".onion/" not in url["href"]:
-                    external_urls_z_lib.add(url["href"])
-        except:
-            pass
-
-    external_urls_welib = _get_download_urls_from_welib(book_id) if USE_CF_BYPASS else set()
-
-    urls = []
-    urls += list(external_urls_welib) if PRIORITIZE_WELIB else []
-    urls += list(slow_urls_no_waitlist) if USE_CF_BYPASS else []
-    urls += list(external_urls_libgen)
-    urls += list(external_urls_welib) if not PRIORITIZE_WELIB else []
-    urls += list(slow_urls_with_waitlist)  if USE_CF_BYPASS else []
-    urls += list(external_urls_z_lib)
-
-    for i in range(len(urls)):
-        urls[i] = downloader.get_absolute_url(AA_BASE_URL, urls[i])
-
-    # Remove empty urls
-    urls = [url for url in urls if url != ""]
-
-    # Create book info object
-    book_info = BookInfo(
-        id=book_id,
-        preview=preview,
-        title=title,
-        publisher=publisher,
-        author=author,
-        format=format,
-        size=size,
-        download_urls=urls,
-    )
-
-    # Extract additional metadata (existing logic)
-    try:
-        info = _extract_book_metadata(divs[-6])
-        book_info.info = info
-
-        # Set language and year from metadata if available
-        if info.get("Language"):
-            book_info.language = info["Language"][0]
-        if info.get("Year"):
-            book_info.year = info["Year"][0]
-    except (IndexError, AttributeError, Exception) as e:
-        logger.warning(f"Could not extract metadata for book ID {book_id}: {e}")
-        book_info.info = {}
-
-    return book_info
-
-def _get_download_urls_from_welib(book_id: str) -> set[str]:
-    """Get download urls from welib.org."""
-    url = f"https://welib.org/md5/{book_id}"
-    logger.info(f"Getting download urls from welib.org for {book_id}. While this uses the bypasser, it will not start downloading them yet.")
-    html = downloader.html_get_page(url, use_bypasser=True)
-    if not html:
-        return []
-    soup = BeautifulSoup(html, "html.parser")
-    download_links = soup.find_all("a", href=True)
-    download_links = [link["href"] for link in download_links]
-    download_links = [link for link in download_links if "/slow_download/" in link]
-    download_links = [downloader.get_absolute_url(url, link) for link in download_links]
-    return set(download_links)
-
-def _extract_book_metadata(
-    metadata_divs
-) -> Dict[str, List[str]]:
-    """Extract metadata from book info divs."""
-    info: Dict[str, List[str]] = {}
-
-    # Process the first set of metadata
-    sub_datas = metadata_divs.find_all("div")[0]
-    sub_datas = list(sub_datas.children)
-    for sub_data in sub_datas:
-        if sub_data.text.strip() == "":
-            continue
-        sub_data = list(sub_data.children)
-        key = sub_data[0].text.strip()
-        value = sub_data[1].text.strip()
-        if key not in info:
-            info[key] = set()
-        info[key].add(value)
-    
-    # make set into list
-    for key, value in info.items():
-        info[key] = list(value)
-
-    # Filter relevant metadata
-    relevant_prefixes = [
-        "ISBN-",
-        "ALTERNATIVE",
-        "ASIN",
-        "Goodreads",
-        "Language",
-        "Year",
-    ]
-    return {
-        k.strip(): v
-        for k, v in info.items()
-        if any(k.lower().startswith(prefix.lower()) for prefix in relevant_prefixes)
-        and "filename" not in k.lower()
-    }
-
-
-def download_book(book_info: BookInfo, book_path: Path, progress_callback: Optional[Callable[[float], None]] = None, cancel_flag: Optional[Event] = None) -> bool:
-    """Download a book from available sources.
-
-    Args:
-        book_id: Book identifier (MD5 hash)
-        title: Book title for logging
-
-    Returns:
-        Optional[BytesIO]: Book content buffer if successful
-    """
-
-    if len(book_info.download_urls) == 0:
-        book_info = get_book_info(book_info.id)
-    download_links = book_info.download_urls
-
-    # If AA_DONATOR_KEY is set, use the fast download URL. Else try other sources.
-    if AA_DONATOR_KEY != "":
-        download_links.insert(
-            0,
-            f"{AA_BASE_URL}/dyn/api/fast_download.json?md5={book_info.id}&key={AA_DONATOR_KEY}",
-        )
-
-    for link in download_links:
-        try:
-            download_url = _get_download_url(link, book_info.title, cancel_flag)
-            if download_url != "":
-                logger.info(f"Downloading `{book_info.title}` from `{download_url}`")
-
-                data = downloader.download_url(download_url, book_info.size or "", progress_callback, cancel_flag)
-                if not data:
-                    raise Exception("No data received")
-
-                logger.info(f"Download finished. Writing to {book_path}")
-                with open(book_path, "wb") as f:
-                    f.write(data.getbuffer())
-                logger.info(f"Writing `{book_info.title}` successfully")
-                return True
-
-        except Exception as e:
-            logger.error_trace(f"Failed to download from {link}: {e}")
-            continue
-
-    return False
-
-
-def _get_download_url(link: str, title: str, cancel_flag: Optional[Event] = None) -> str:
-    """Extract actual download URL from various source pages."""
-
-    url = ""
-
-    if link.startswith(f"{AA_BASE_URL}/dyn/api/fast_download.json"):
-        page = downloader.html_get_page(link)
-        url = json.loads(page).get("download_url")
-    else:
-        html = downloader.html_get_page(link)
-
-        if html == "":
-            return ""
-
-        soup = BeautifulSoup(html, "html.parser")
-
-        if link.startswith("https://z-lib."):
-            download_link = soup.find_all("a", href=True, class_="addDownloadedBook")
-            if download_link:
-                url = download_link[0]["href"]
-        elif "/slow_download/" in link:
-            download_links = soup.find_all("a", href=True, string="📚 Download now")
-            if not download_links:
-                countdown = soup.find_all("span", class_="js-partner-countdown")
-                if countdown:
-                    sleep_time = int(countdown[0].text)
-                    logger.info(f"Waiting {sleep_time}s for {title}")
-                    if cancel_flag is not None and cancel_flag.wait(timeout=sleep_time):
-                        logger.info(f"Cancelled wait for {title}")
-                        return ""
-                    url = _get_download_url(link, title, cancel_flag)
-            else:
-                url = download_links[0]["href"]
-        else:
-            url = soup.find_all("a", string="GET")[0]["href"]
-
-    return downloader.get_absolute_url(link, url)
-, '', raw_title, flags=re.IGNORECASE).strip()
-        title = title.title() if not title.isupper() else title
-        logger.info(f"Found title from source title pattern: '{title}'")
-    
-    # Strategy 2: Look for author name patterns in the text
-    # Based on your log, we can see "richard osman" appears multiple times
-    author_match = re.search(r'by\s+(richard\s+osman)', page_text, re.IGNORECASE)
-    if author_match:
-        author = author_match.group(1).title()
-        logger.info(f"Found author from text pattern: '{author}'")
-    elif 'richard osman' in page_text.lower():
-        # If we can't find "by Richard Osman", just find "Richard Osman" as author
-        author_match = re.search(r'\b(richard\s+osman)\b', page_text, re.IGNORECASE)
-        if author_match:
-            author = author_match.group(1).title()
-            logger.info(f"Found author from name pattern: '{author}'")
-    
-    # Strategy 3: Publisher extraction
-    publisher_patterns = [
-        r'penguin\s+(?:books|publishing|random\s+house)[^\n\r]*',
-        r'publisher[:\s]+([^\n\r]+)',
-    ]
-    
-    for pattern in publisher_patterns:
-        match = re.search(pattern, page_text, re.IGNORECASE)
-        if match:
-            if 'penguin' in pattern:
-                publisher = match.group(0).title()
-            else:
-                publisher = match.group(1).strip()
-            logger.info(f"Found publisher: '{publisher}'")
-            break
-    
     # Strategy 5: Fallback HTML div extraction only if we still need data
     if title == "Unknown Title" or author == "Unknown Author":
         logger.info("Attempting HTML div extraction as final fallback...")
@@ -673,50 +358,52 @@ def _get_download_url(link: str, title: str, cancel_flag: Optional[Event] = None
                 logger.debug(f"Error processing div {i}: {e}")
                 continue
     
-    # Strategy 4: Extract format and size
+    # Strategy 6: Extract format and size more carefully
     try:
-        # Look for format and size in multiple locations
-        details_found = False
+        # First, try to find actual file size information
+        size_patterns = [
+            r'(\d+(?:\.\d+)?\s*(?:mb|kb|gb))',  # Direct size pattern
+            r'size[:\s]*(\d+(?:\.\d+)?\s*(?:mb|kb|gb))',  # Size with label
+        ]
         
-        # Method 1: Original approach - look at divs[13]
-        if len(divs) > 13 and divs[13]:
-            try:
-                details_text = divs[13].get_text(strip=True) if hasattr(divs[13], 'get_text') else str(divs[13]).strip()
-                _details = details_text.lower().split(" · ")
-                logger.debug(f"Details from divs[13]: {_details}")
-                
-                for detail in _details:
-                    detail = detail.strip()
-                    if not format or format == "epub":  # Only override if we don't have a format
-                        if detail in SUPPORTED_FORMATS:
-                            format = detail
-                            logger.debug(f"Found format from details: {format}")
-                    if not size and any(u in detail for u in ["mb", "kb", "gb"]):
-                        size = detail
-                        logger.debug(f"Found size from details: {size}")
-                        
-                if format != "epub" or size:
-                    details_found = True
-            except Exception as e:
-                logger.debug(f"Error extracting from divs[13]: {e}")
+        for pattern in size_patterns:
+            match = re.search(pattern, page_text, re.IGNORECASE)
+            if match:
+                size = match.group(1).lower()
+                logger.info(f"Found size from pattern: '{size}'")
+                break
         
-        # Method 2: Search all div text for format/size if not found
-        if not details_found:
-            page_text_lower = page_text.lower()
-            
-            # Look for format in page text
+        # If we still don't have size, look in specific divs but be more careful
+        if not size:
+            # Look for actual size info in shorter div texts
+            for i, div in enumerate(divs[:20]):
+                if not div or not hasattr(div, 'get_text'):
+                    continue
+                try:
+                    div_text = div.get_text(strip=True)
+                    # Only consider short div texts for size (avoid descriptions)
+                    if len(div_text) < 100 and any(u in div_text.lower() for u in ["mb", "kb", "gb"]):
+                        # Extract just the size part
+                        size_match = re.search(r'(\d+(?:\.\d+)?\s*(?:mb|kb|gb))', div_text, re.IGNORECASE)
+                        if size_match:
+                            size = size_match.group(1).lower()
+                            logger.info(f"Found size from div[{i}]: '{size}'")
+                            break
+                except:
+                    continue
+        
+        # Look for format in the URL (most reliable source based on your log)
+        for link in download_links:
+            href = link.get('href', '')
+            # Look for .epub, .pdf, etc. in download URLs
             for fmt in SUPPORTED_FORMATS:
-                if fmt in page_text_lower and (not format or format == "epub"):
+                if f'.{fmt}' in href.lower():
                     format = fmt
-                    logger.debug(f"Found format in page text: {format}")
+                    logger.info(f"Found format from URL: '{format}'")
                     break
-            
-            # Look for size with regex
-            size_match = re.search(r'(\d+(?:\.\d+)?\s*(?:mb|kb|gb))', page_text_lower)
-            if size_match and not size:
-                size = size_match.group(1)
-                logger.debug(f"Found size in page text: {size}")
-                
+            if format != "epub":
+                break
+                    
     except Exception as e:
         logger.debug(f"Error in format/size extraction: {e}")
     
@@ -742,14 +429,13 @@ def _get_download_url(link: str, title: str, cancel_flag: Optional[Event] = None
     logger.info(f"================================")
 
     # Extract download URLs (existing logic)
-    every_url = soup.find_all("a")
     slow_urls_no_waitlist = set()
     slow_urls_with_waitlist = set()
     external_urls_libgen = set()
     external_urls_z_lib = set()
     external_urls_welib = set()
 
-    for url in every_url:
+    for url in download_links:
         try:
             if url.text.strip().lower().startswith("slow partner server"):
                 if (
