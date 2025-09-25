@@ -82,7 +82,6 @@ def _extract_metadata_from_download_url(url: str) -> Dict[str, str]:
     logger.debug(f"Attempting to extract metadata from URL: {decoded_url[:200]}...")
     
     # NEW: Enhanced pattern for Anna's Archive URLs like:
-    # /Orbital%20--%20Samantha%20Harvey%20--%20Grove%20Atlantic%20--%20e57f992fac9289868e5dbbd5ccc723f0%20--%20Anna%E2%80%99s%20Archive.mobi
     anna_pattern = r'/([^/]+?)(?:%20|\s+)--(?:%20|\s+)([^/]+?)(?:%20|\s+)--(?:%20|\s+)([^/]+?)(?:%20|\s+)--(?:%20|\s+)[a-f0-9]{32}(?:%20|\s+)--(?:%20|\s+)[^/]*\.(epub|mobi|azw3|pdf|fb2|djvu|cbz|cbr|tpz)'
     
     match = re.search(anna_pattern, decoded_url, re.IGNORECASE)
