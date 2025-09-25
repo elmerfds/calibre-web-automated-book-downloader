@@ -3,7 +3,7 @@
 import time, json, re
 from pathlib import Path
 from urllib.parse import quote
-from typing import List, Optional, Dict, Union, Callable
+from typing import List, Optional, Dict, Union, Callable, Tuple
 from threading import Event
 from bs4 import BeautifulSoup, Tag, NavigableString
 
@@ -338,8 +338,17 @@ def _get_download_urls_from_welib(book_id: str) -> set[str]:
 def download_book(book_info: BookInfo, book_path: Path, progress_callback: Optional[Callable[[float], None]] = None, cancel_flag: Optional[Event] = None) -> bool:
     """Download a book from available sources.
     
-    Note: Metadata correction now happens earlier in the process (during filename generation),
-    so this function focuses purely on downloading the file.
+    Note: This is the legacy function. Use download_book_with_final_url for enhanced functionality.
+    """
+    success, _ = download_book_with_final_url(book_info, book_path, progress_callback, cancel_flag)
+    return success
+
+
+def download_book_with_final_url(book_info: BookInfo, book_path: Path, progress_callback: Optional[Callable[[float], None]] = None, cancel_flag: Optional[Event] = None) -> Tuple[bool, Optional[str]]:
+    """Download a book from available sources and return the final download URL.
+    
+    Returns:
+        Tuple[bool, Optional[str]]: (success, final_download_url)
     """
     if len(book_info.download_urls) == 0:
         book_info = get_book_info(book_info.id)
@@ -355,18 +364,18 @@ def download_book(book_info: BookInfo, book_path: Path, progress_callback: Optio
             if download_url:
                 logger.info(f"Downloading `{book_info.title}` from `{download_url}`")
                 
-                # Download the file (metadata correction now happens earlier in the process)
+                # Download the file and return the final URL for metadata extraction
                 data = downloader.download_url(download_url, book_info.size or "", progress_callback, cancel_flag)
                 if data:
                     with open(book_path, "wb") as f:
                         f.write(data.getbuffer())
                     logger.info(f"Successfully downloaded: {book_info.title}")
-                    return True
+                    return True, download_url  # Return success and final URL
         except Exception as e:
             logger.error_trace(f"Failed to download from {link}: {e}")
             continue
 
-    return False
+    return False, None  # Return failure and no URL
 
 
 def _get_download_url(link: str, title: str, cancel_flag: Optional[Event] = None) -> str:
