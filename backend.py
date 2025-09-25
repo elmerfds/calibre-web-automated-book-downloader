@@ -47,8 +47,25 @@ def _extract_metadata_from_download_url(url: str) -> Dict[str, str]:
     """Extract book metadata from the final download URL."""
     metadata = {}
     
+    # Validate input URL
+    if not url or not url.strip():
+        logger.debug("Empty URL provided for metadata extraction")
+        return metadata
+        
+    url = url.strip()
+    
+    # Basic URL validation - must start with http/https
+    if not url.startswith(('http://', 'https://')):
+        logger.debug(f"Invalid URL format: {url[:50]}...")
+        return metadata
+    
     # Decode URL-encoded characters
-    decoded_url = url.replace('%20', ' ').replace('%2C', ',').replace('%3A', ':')
+    try:
+        decoded_url = url.replace('%20', ' ').replace('%2C', ',').replace('%3A', ':')
+        decoded_url = decoded_url.replace('%28', '(').replace('%29', ')')
+    except Exception as e:
+        logger.debug(f"Error decoding URL: {e}")
+        return metadata
     
     # Pattern: Title -- Author -- Location, Year -- Publisher -- ISBN
     # Example: Then She Was Gone -- Lisa Jewell -- New York, 2017 -- Penguin Random House UK -- 9781473538337
@@ -76,7 +93,7 @@ def _extract_metadata_from_download_url(url: str) -> Dict[str, str]:
             metadata['author'] = author
         if year:
             metadata['year'] = year
-        if publisher:
+        if publisher and len(publisher.strip()) > 2:
             metadata['publisher'] = publisher
         if isbn:
             metadata['isbn'] = isbn
@@ -95,11 +112,11 @@ def _extract_metadata_from_download_url(url: str) -> Dict[str, str]:
         match = re.search(pattern, decoded_url)
         if match:
             title = match.group(1).strip()
-            author = match.group(2).strip()
+            author = match.group(2).strip() if len(match.groups()) > 1 else ""
             
             if _is_valid_title(title):
                 metadata['title'] = title
-            if _is_valid_author(author):
+            if author and _is_valid_author(author):
                 metadata['author'] = author
                 
             logger.info(f"Extracted from simple URL pattern - Title: '{title}', Author: '{author}'")
@@ -160,6 +177,12 @@ def _resolve_download_url_for_metadata(link: str) -> Optional[str]:
     getting the URL for metadata extraction purposes only.
     """
     try:
+        # Validate input URL
+        if not link or not link.strip():
+            logger.debug("Empty link provided, skipping resolution")
+            return None
+            
+        link = link.strip()
         logger.debug(f"Resolving download URL for metadata: {link}")
         
         # Handle direct donator API links
@@ -167,19 +190,19 @@ def _resolve_download_url_for_metadata(link: str) -> Optional[str]:
             try:
                 import json
                 page = downloader.html_get_page(link)
-                if page:
+                if page and page.strip():
                     response_data = json.loads(page)
                     download_url = response_data.get("download_url", "")
-                    if download_url:
+                    if download_url and download_url.strip():
                         logger.debug(f"Got donator download URL: {download_url}")
-                        return download_url
+                        return download_url.strip()
             except Exception as e:
                 logger.debug(f"Failed to resolve donator API URL: {e}")
                 return None
         
         # Get the page HTML
         html = downloader.html_get_page(link)
-        if not html:
+        if not html or not html.strip():
             logger.debug(f"No HTML content received from {link}")
             return None
 
@@ -190,16 +213,18 @@ def _resolve_download_url_for_metadata(link: str) -> Optional[str]:
         if link.startswith("https://z-lib."):
             download_link = soup.find_all("a", href=True, class_="addDownloadedBook")
             if download_link:
-                resolved_url = download_link[0]["href"]
-                logger.debug(f"Resolved Z-Library URL: {resolved_url}")
-                return resolved_url
-                
+                resolved_url = download_link[0].get("href", "").strip()
+                if resolved_url:
+                    logger.debug(f"Resolved Z-Library URL: {resolved_url}")
+                    return resolved_url
+                    
         elif "/slow_download/" in link:
             download_links = soup.find_all("a", href=True, string="📚 Download now")
             if download_links:
-                resolved_url = download_links[0]["href"]
-                logger.debug(f"Resolved slow download URL: {resolved_url}")
-                return resolved_url
+                resolved_url = download_links[0].get("href", "").strip()
+                if resolved_url:
+                    logger.debug(f"Resolved slow download URL: {resolved_url}")
+                    return resolved_url
             else:
                 # Check if there's a countdown - if so, we can't resolve it quickly
                 countdown = soup.find_all("span", class_="js-partner-countdown")
@@ -211,9 +236,10 @@ def _resolve_download_url_for_metadata(link: str) -> Optional[str]:
             # Generic case - look for GET links
             get_links = soup.find_all("a", string="GET")
             if get_links:
-                resolved_url = get_links[0]["href"]
-                logger.debug(f"Resolved generic download URL: {resolved_url}")
-                return resolved_url
+                resolved_url = get_links[0].get("href", "").strip()
+                if resolved_url:
+                    logger.debug(f"Resolved generic download URL: {resolved_url}")
+                    return resolved_url
 
         logger.debug(f"Could not resolve download URL from {link}")
         return None
@@ -237,6 +263,7 @@ def _get_corrected_metadata_from_urls(book_info: BookInfo) -> Dict[str, str]:
             # Refresh book info to get download URLs
             updated_book_info = book_manager.get_book_info(book_info.id)
             book_info.download_urls = updated_book_info.download_urls
+            logger.info(f"Refreshed book info, found {len(book_info.download_urls)} download URLs")
         except Exception as e:
             logger.debug(f"Failed to refresh book info: {e}")
             return {}
@@ -256,11 +283,16 @@ def _get_corrected_metadata_from_urls(book_info: BookInfo) -> Dict[str, str]:
         urls_tried += 1
         logger.debug(f"Trying URL {urls_tried}/{max_urls_to_try}: {link}")
         
+        # Skip if link is empty or invalid
+        if not link or not link.strip():
+            logger.debug(f"Skipping empty URL {urls_tried}")
+            continue
+            
         try:
             # Try to resolve the download URL
-            resolved_url = _resolve_download_url_for_metadata(link)
+            resolved_url = _resolve_download_url_for_metadata(link.strip())
             
-            if resolved_url:
+            if resolved_url and resolved_url.strip():
                 # Extract metadata from the resolved URL
                 url_metadata = _extract_metadata_from_download_url(resolved_url)
                 
@@ -272,10 +304,32 @@ def _get_corrected_metadata_from_urls(book_info: BookInfo) -> Dict[str, str]:
                     if 'title' in url_metadata and 'author' in url_metadata:
                         logger.info("Got both title and author, stopping URL resolution")
                         break
+                else:
+                    logger.debug(f"No metadata found in resolved URL: {resolved_url[:100]}...")
+            else:
+                logger.debug(f"Could not resolve URL {urls_tried} to valid download link")
                         
         except Exception as e:
             logger.debug(f"Error processing URL {urls_tried}: {e}")
             continue
+    
+    # If we didn't get good metadata from URLs, try extracting from the original URLs themselves
+    if not corrected_metadata and book_info.download_urls:
+        logger.info("No metadata from resolved URLs, trying original URLs directly...")
+        for i, original_url in enumerate(book_info.download_urls[:max_urls_to_try], 1):
+            if not original_url or not original_url.strip():
+                continue
+                
+            try:
+                url_metadata = _extract_metadata_from_download_url(original_url)
+                if url_metadata:
+                    logger.info(f"Found metadata in original URL {i}: {url_metadata}")
+                    corrected_metadata.update(url_metadata)
+                    if 'title' in url_metadata and 'author' in url_metadata:
+                        break
+            except Exception as e:
+                logger.debug(f"Error extracting from original URL {i}: {e}")
+                continue
     
     logger.info(f"=== EARLY METADATA EXTRACTION COMPLETE ===")
     logger.info(f"Corrected metadata found: {corrected_metadata}")
