@@ -121,23 +121,25 @@ def download_url(link: str, size: str = "", progress_callback: Optional[Callable
                 downloaded += len(chunk)
                 pbar.update(len(chunk))
                 
-                # Calculate and report progress (less frequently to avoid log spam)
+                # Calculate and report progress (call callback every chunk, log less frequently)
                 current_time = time.time()
-                if total_size > 0 and (current_time - last_progress_time >= 2.0):  # Update every 2 seconds
+                if total_size > 0:
                     progress_percent = (downloaded / total_size) * 100.0
                     
-                    # Calculate current speed
-                    time_diff = current_time - last_progress_time
-                    bytes_diff = downloaded - last_downloaded
-                    current_speed_mb = (bytes_diff / time_diff) / (1024 * 1024) if time_diff > 0 else 0
-                    
-                    # Call progress callback for backend tracking
+                    # Always call progress callback for backend tracking
                     if progress_callback is not None:
                         progress_callback(progress_percent)
                     
-                    # Update tracking variables
-                    last_progress_time = current_time
-                    last_downloaded = downloaded
+                    # Log progress less frequently to avoid spam (every 2 seconds)
+                    if current_time - last_progress_time >= 2.0:
+                        # Calculate current speed
+                        time_diff = current_time - last_progress_time
+                        bytes_diff = downloaded - last_downloaded
+                        current_speed_mb = (bytes_diff / time_diff) / (1024 * 1024) if time_diff > 0 else 0
+                        
+                        # Update tracking variables
+                        last_progress_time = current_time
+                        last_downloaded = downloaded
         finally:
             pbar.close()
             
