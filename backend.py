@@ -733,21 +733,22 @@ def update_download_progress(book_id: str, progress: float) -> None:
     """Update download progress."""
     book_queue.update_progress(book_id, progress)
     
-    # Log progress at key milestones
+    # Get book title for better logging (truncate book_id for readability)
+    try:
+        book_info = book_queue._book_data.get(book_id)
+        book_title = book_info.title[:30] + "..." if book_info and len(book_info.title) > 30 else (book_info.title if book_info else book_id[:8])
+    except:
+        book_title = book_id[:8]  # Fallback to short book ID
+    
+    # Log progress at meaningful milestones only (reduce log spam)
     if progress >= 100.0:
-        logger.info(f"Download complete: {book_id} (100%)")
-    elif progress >= 75.0:
-        # Log every 25% after 75%
-        if int(progress) % 25 == 0:
-            logger.info(f"Download progress: {book_id} ({progress:.1f}%)")
-    elif progress >= 25.0:
-        # Log every 25% between 25-75%
-        if int(progress) % 25 == 0:
-            logger.info(f"Download progress: {book_id} ({progress:.1f}%)")
-    elif progress >= 10.0:
-        # Log every 10% for first 25%
-        if int(progress) % 10 == 0:
-            logger.info(f"Download progress: {book_id} ({progress:.1f}%)")
+        logger.info(f"Download complete: {book_title} (100%)")
+    elif progress >= 90.0 and int(progress) % 10 == 0:
+        logger.info(f"Download progress: {book_title} ({progress:.0f}%)")
+    elif progress >= 50.0 and int(progress) % 25 == 0:
+        logger.info(f"Download progress: {book_title} ({progress:.0f}%)")
+    elif progress >= 25.0 and int(progress) % 25 == 0:
+        logger.info(f"Download progress: {book_title} ({progress:.0f}%)")
 
 def cancel_download(book_id: str) -> bool:
     """Cancel a download.

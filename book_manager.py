@@ -51,12 +51,14 @@ def search_books(query: str, filters: SearchFilters) -> List[BookInfo]:
 
     html = downloader.html_get_page(url)
     if not html or "No files found." in html:
-        raise Exception("No books found. Please try another query.")
+        logger.info(f"No books found for query: '{query}' with filters: {vars(filters)}")
+        return []
 
     soup = BeautifulSoup(html, "html.parser")
     tbody = soup.find("table")
     if not tbody:
-        raise Exception("No books found. Please try another query.")
+        logger.info(f"No results table found for query: '{query}'")
+        return []
 
     books = []
     for line_tr in tbody.find_all("tr"):
@@ -68,6 +70,12 @@ def search_books(query: str, filters: SearchFilters) -> List[BookInfo]:
             logger.error_trace(f"Failed to parse search result row: {e}")
 
     books.sort(key=lambda x: (SUPPORTED_FORMATS.index(x.format) if x.format in SUPPORTED_FORMATS else len(SUPPORTED_FORMATS)))
+    
+    if not books:
+        logger.info(f"Search completed but no valid books parsed for query: '{query}'")
+    else:
+        logger.info(f"Found {len(books)} books for query: '{query}'")
+    
     return books
 
 
