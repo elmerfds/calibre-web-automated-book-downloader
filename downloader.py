@@ -75,42 +75,87 @@ def download_url(link: str, size: str = "", progress_callback: Optional[Callable
     
     Args:
         link: URL to download from
+        size: Expected file size (for progress calculation)
+        progress_callback: Function to call with progress updates
+        cancel_flag: Event to check for cancellation
         
     Returns:
         BytesIO: Buffer containing downloaded content if successful
     """
     try:
-        logger.info(f"Downloading from: {link}")
+        logger.info(f"Starting download from: {link}")
         response = requests.get(link, stream=True, proxies=PROXIES)
         response.raise_for_status()
 
+        # Calculate expected size
         total_size : float = 0.0
         try:
             # we assume size is in MB
             total_size = float(size.strip().replace(" ", "").replace(",", ".").upper()[:-2].strip()) * 1024 * 1024
+            logger.info(f"Expected download size: {total_size/1024/1024:.2f} MB")
         except:
             total_size = float(response.headers.get('content-length', 0))
+            if total_size > 0:
+                logger.info(f"Download size from headers: {total_size/1024/1024:.2f} MB")
+            else:
+                logger.info("Download size unknown")
         
         buffer = BytesIO()
+        downloaded = 0
+        last_logged_percent = -1
+        start_time = time.time()
 
-        # Initialize the progress bar with your guess
-        pbar = tqdm(total=total_size, unit='B', unit_scale=True, desc='Downloading')
-        for chunk in response.iter_content(chunk_size=1000):
-            buffer.write(chunk)
-            pbar.update(len(chunk))
-            if progress_callback is not None:
-                progress_callback(pbar.n * 100.0 / total_size)
-            if cancel_flag is not None and cancel_flag.is_set():
-                logger.info(f"Download cancelled: {link}")
-                return None
+        # Initialize the progress bar
+        pbar = tqdm(total=total_size, unit='B', unit_scale=True, desc='Downloading', 
+                   disable=False, ncols=80, bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]')
+        
+        try:
+            for chunk in response.iter_content(chunk_size=8192):  # Increased chunk size for better performance
+                if cancel_flag is not None and cancel_flag.is_set():
+                    logger.info(f"Download cancelled: {link}")
+                    pbar.close()
+                    return None
+                
+                buffer.write(chunk)
+                downloaded += len(chunk)
+                pbar.update(len(chunk))
+                
+                # Calculate and report progress
+                if total_size > 0:
+                    progress_percent = (downloaded / total_size) * 100.0
+                    
+                    # Call progress callback
+                    if progress_callback is not None:
+                        progress_callback(progress_percent)
+                    
+                    # Log progress at key milestones (every 10% for console logs)
+                    current_percent = int(progress_percent)
+                    if current_percent > last_logged_percent and current_percent % 10 == 0:
+                        elapsed = time.time() - start_time
+                        speed = downloaded / elapsed if elapsed > 0 else 0
+                        speed_mb = speed / (1024 * 1024)
+                        logger.info(f"Download progress: {current_percent}% ({downloaded/1024/1024:.1f}/{total_size/1024/1024:.1f} MB) - {speed_mb:.1f} MB/s")
+                        last_logged_percent = current_percent
+        finally:
+            pbar.close()
             
-        pbar.close()
-        if buffer.tell() * 0.1 < total_size * 0.9:
-            # Check the content of the buffer if its HTML or binary
-            if response.headers.get('content-type', '').startswith('text/html'):
-                logger.warn(f"Failed to download content for {link}. Found HTML content instead.")
+        elapsed_time = time.time() - start_time
+        final_size_mb = downloaded / (1024 * 1024)
+        avg_speed_mb = final_size_mb / elapsed_time if elapsed_time > 0 else 0
+        
+        logger.info(f"Download completed: {final_size_mb:.2f} MB in {elapsed_time:.1f}s (avg {avg_speed_mb:.1f} MB/s)")
+        
+        # Validate download completion
+        if total_size > 0 and downloaded < (total_size * 0.9):  # Allow 10% variance
+            content_type = response.headers.get('content-type', '')
+            if content_type.startswith('text/html'):
+                logger.warning(f"Download may have failed - received HTML content instead of file for {link}")
                 return None
+            else:
+                logger.warning(f"Download size mismatch: expected {total_size/1024/1024:.2f} MB, got {final_size_mb:.2f} MB")
+        
         return buffer
+        
     except requests.exceptions.RequestException as e:
         logger.error_trace(f"Failed to download from {link}: {e}")
         return None

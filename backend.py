@@ -643,7 +643,7 @@ def _download_book_with_cancellation(book_id: str, cancel_flag: Event) -> Option
             return None
             
         book_info = book_queue._book_data[book_id]
-        logger.info(f"Starting download: {book_info.title}")
+        logger.info(f"📚 Starting download: '{book_info.title}' by {book_info.author} ({book_id})")
 
         # Generate comprehensive filename (now with early URL resolution)
         logger.info(f"=== FILENAME GENERATION DEBUG ===")
@@ -655,7 +655,7 @@ def _download_book_with_cancellation(book_id: str, cancel_flag: Event) -> Option
             book_name = f"{book_id}.{book_info.format}"
             logger.info(f"Using book ID for filename: '{book_name}'")
         
-        logger.info(f"Final filename: '{book_name}'")
+        logger.info(f"📁 Final filename: '{book_name}'")
         logger.info(f"=== END FILENAME DEBUG ===")
         
         book_path = TMP_DIR / book_name
@@ -665,6 +665,7 @@ def _download_book_with_cancellation(book_id: str, cancel_flag: Event) -> Option
             logger.info(f"Download cancelled before book manager call: {book_id}")
             return None
         
+        logger.info(f"🔄 Starting file download for: {book_info.title}")
         progress_callback = lambda progress: update_download_progress(book_id, progress)
         success = book_manager.download_book(book_info, book_path, progress_callback, cancel_flag)
         
@@ -688,15 +689,17 @@ def _download_book_with_cancellation(book_id: str, cancel_flag: Event) -> Option
                 book_path.unlink()
             return None
 
+        logger.info(f"✅ Download successful, processing file: {book_info.title}")
+
         if CUSTOM_SCRIPT:
-            logger.info(f"Running custom script: {CUSTOM_SCRIPT}")
+            logger.info(f"🔧 Running custom script: {CUSTOM_SCRIPT}")
             subprocess.run([CUSTOM_SCRIPT, book_path])
             
         intermediate_path = INGEST_DIR / f"{book_id}.crdownload"
         final_path = INGEST_DIR / book_name
         
         if os.path.exists(book_path):
-            logger.info(f"Moving book to ingest directory: {book_path} -> {final_path}")
+            logger.info(f"📂 Moving book to ingest directory: {book_path.name} -> {final_path.name}")
             try:
                 shutil.move(book_path, intermediate_path)
             except Exception as e:
@@ -716,19 +719,35 @@ def _download_book_with_cancellation(book_id: str, cancel_flag: Event) -> Option
                 return None
                 
             os.rename(intermediate_path, final_path)
-            logger.info(f"Download completed successfully: {book_info.title}")
+            logger.info(f"🎉 Download completed successfully: '{book_info.title}' saved as '{final_path.name}'")
             
         return str(final_path)
     except Exception as e:
         if cancel_flag.is_set():
             logger.info(f"Download cancelled during error handling: {book_id}")
         else:
-            logger.error_trace(f"Error downloading book: {e}")
+            logger.error_trace(f"❌ Error downloading book '{book_info.title}': {e}")
         return None
 
 def update_download_progress(book_id: str, progress: float) -> None:
     """Update download progress."""
     book_queue.update_progress(book_id, progress)
+    
+    # Log progress at key milestones
+    if progress >= 100.0:
+        logger.info(f"Download complete: {book_id} (100%)")
+    elif progress >= 75.0:
+        # Log every 25% after 75%
+        if int(progress) % 25 == 0:
+            logger.info(f"Download progress: {book_id} ({progress:.1f}%)")
+    elif progress >= 25.0:
+        # Log every 25% between 25-75%
+        if int(progress) % 25 == 0:
+            logger.info(f"Download progress: {book_id} ({progress:.1f}%)")
+    elif progress >= 10.0:
+        # Log every 10% for first 25%
+        if int(progress) % 10 == 0:
+            logger.info(f"Download progress: {book_id} ({progress:.1f}%)")
 
 def cancel_download(book_id: str) -> bool:
     """Cancel a download.
