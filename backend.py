@@ -91,9 +91,13 @@ def _extract_metadata_from_download_url(url: str) -> Dict[str, str]:
         publisher = match.group(4).strip()
         isbn_or_more = match.group(5).strip()
         
-        # Additional title cleanup - remove file path remnants
+        # Additional title cleanup - remove file path remnants and decode URL entities
         title = re.sub(r'^[A-Z]:[\\\/][^\\\/]+[\\\/]', '', title)  # Remove "P:\folder\"
         title = re.sub(r'^[^\\\/]*[\\\/]', '', title)  # Remove any remaining path prefix
+        
+        # Decode common URL entities in titles
+        title = title.replace('%2C', ',').replace('%27', "'").replace('%3A', ':')
+        title = title.replace('%28', '(').replace('%29', ')').replace('%20', ' ')
         
         # Extract year from location_year
         year_match = re.search(r'\b(19|20)\d{2}\b', location_year)
@@ -130,9 +134,11 @@ def _extract_metadata_from_download_url(url: str) -> Dict[str, str]:
             title = match.group(1).strip()
             author = match.group(2).strip() if len(match.groups()) > 1 else ""
             
-            # Clean up title
+            # Clean up title and decode URL entities
             title = re.sub(r'^[A-Z]:[\\\/][^\\\/]+[\\\/]', '', title)
             title = re.sub(r'^[^\\\/]*[\\\/]', '', title)
+            title = title.replace('%2C', ',').replace('%27', "'").replace('%3A', ':')
+            title = title.replace('%28', '(').replace('%29', ')').replace('%20', ' ')
             
             if _is_valid_title(title):
                 metadata['title'] = title
@@ -392,6 +398,178 @@ def _generate_comprehensive_filename(book_info: BookInfo, book_id: str) -> str:
             logger.info(f"Added year: '{book_info.year}'")
             
         if 'publisher' in corrected_metadata and (book_info.publisher == "Unknown Publisher" or not book_info.publisher):
+            old_publisher = book_info.publisher
+            book_info.publisher = corrected_metadata['publisher']
+            logger.info(f"Corrected publisher: '{old_publisher}' -> '{book_info.publisher}'")
+            
+        if 'isbn' in corrected_metadata:
+            if not book_info.info or 'ISBN' not in book_info.info:
+                book_info.info = {'ISBN': [corrected_metadata['isbn']]}
+            logger.info(f"Added ISBN: '{corrected_metadata['isbn']}'")
+    else:
+        logger.info("No corrected metadata found from URLs, using original book info")
+    
+    # STEP 3: Clean up any URL encoding in existing title/author (from page parsing)
+    if book_info.title:
+        original_title = book_info.title
+        # Decode URL entities in title
+        book_info.title = book_info.title.replace('%2C', ',').replace('%27', "'").replace('%3A', ':')
+        book_info.title = book_info.title.replace('%28', '(').replace('%29', ')').replace('%20', ' ')
+        if original_title != book_info.title:
+            logger.info(f"Decoded title URL entities: '{original_title}' -> '{book_info.title}'")
+    
+    if book_info.author:
+        original_author = book_info.author  
+        # Decode URL entities in author
+        book_info.author = book_info.author.replace('%2C', ',').replace('%27', "'").replace('%3A', ':')
+        book_info.author = book_info.author.replace('%28', '(').replace('%29', ')').replace('%20', ' ')
+        if original_author != book_info.author:
+            logger.info(f"Decoded author URL entities: '{original_author}' -> '{book_info.author}'")
+    
+    # STEP 4: Generate filename using (potentially corrected) metadata
+    # Start with title
+    title = book_info.title if book_info.title and book_info.title != "Unknown Title" else "Unknown_Title"
+    
+    # Format author name (Last, First format)
+    author = ""
+    if book_info.author and book_info.author != "Unknown Author":
+        author_name = book_info.author.strip()
+        # Handle "Richard Osman" -> "Osman, Richard"
+        if ' ' in author_name:
+            parts = author_name.split()
+            if len(parts) == 2:
+                author = f"{parts[-1]}, {parts[0]}"
+            else:
+                # For more complex names, just use as-is
+                author = author_name
+        else:
+            author = author_name
+    
+    # Extract series information from title and metadata
+    series_info = ""
+    series_number = ""
+    
+    # Look for series info in the title
+    if "thursday murder club" in title.lower():
+        series_info = "Thursday Murder Club"
+        
+        # Extract series number from title
+        series_patterns = [
+            r'#(\d+)',  # #4
+            r'mystery\s+#?(\d+)',  # Mystery 4 or Mystery #4
+            r'club\s+mystery\s+#?(\d+)',  # Club Mystery #4
+            r'\(\s*a\s+thursday\s+murder\s+club\s+mystery\s+#?(\d+)\s*\)',  # (A Thursday Murder Club Mystery #4)
+        ]
+        
+        for pattern in series_patterns:
+            match = re.search(pattern, title.lower())
+            if match:
+                series_number = match.group(1)
+                logger.info(f"Found series number in title: {series_number}")
+                break
+    
+    # Also check metadata for additional info
+    year = book_info.year if book_info.year else ""
+    if not year and book_info.info:
+        # Look for year in additional metadata
+        for key, values in book_info.info.items():
+            if 'year' in key.lower() and values:
+                year = str(values[0])
+                break
+    
+    # Extract ISBN from metadata
+    isbn = ""
+    if book_info.info:
+        for key, values in book_info.info.items():
+            if 'isbn' in key.lower() and values:
+                # Prefer ISBN-13, then ISBN-10
+                if '13' in key or (not isbn and values):
+                    isbn = str(values[0])
+                    # Clean up ISBN (remove hyphens and keep only digits and X)
+                    isbn = re.sub(r'[^0-9X]', '', isbn)
+                    break
+    
+    # Clean up publisher name
+    publisher = ""
+    if book_info.publisher and book_info.publisher != "Unknown Publisher":
+        pub_clean = book_info.publisher.strip()
+        # Simplify long publisher names
+        if "penguin" in pub_clean.lower():
+            if "random house" in pub_clean.lower():
+                publisher = "Penguin Random House"
+            elif "uk" in pub_clean.lower() or "britain" in pub_clean.lower():
+                publisher = "Penguin Random House UK"
+            else:
+                publisher = "Penguin Books"
+        elif "dorman" in pub_clean.lower() and "viking" in pub_clean.lower():
+            publisher = "Pamela Dorman Books"
+        else:
+            # Keep original but limit length
+            if len(pub_clean) < 30:
+                publisher = pub_clean
+    
+    # Build filename components
+    components = []
+    
+    # 1. Title (cleaned)
+    title_clean = title.replace("_", " ")  # Don't underscore the title in comprehensive format
+    components.append(title_clean)
+    
+    # 2. Author (if available)
+    if author:
+        components.append(author)
+    
+    # 3. Series info (if available)
+    if series_info:
+        series_part = series_info
+        if series_number:
+            series_part += f", {series_number}"
+        if year:
+            series_part += f", {year}"
+        components.append(series_part)
+    elif year:
+        # Just year if no series info
+        components.append(year)
+    
+    # 4. Publisher (if available and not too long)
+    if publisher:
+        components.append(publisher)
+    
+    # 5. ISBN (if available)
+    if isbn:
+        components.append(isbn)
+    
+    # Join components with " -- "
+    filename_base = " -- ".join(components)
+    
+    # Add file extension
+    file_extension = book_info.format if book_info.format else "epub"
+    final_filename = f"{filename_base}.{file_extension}"
+    
+    # Ensure filename isn't too long (most filesystems limit to 255 characters)
+    if len(final_filename) > 240:  # Leave some buffer
+        logger.warning(f"Filename too long ({len(final_filename)} chars), truncating...")
+        # Keep title and author, truncate other parts
+        essential_parts = [components[0]]  # Always keep title
+        if len(components) > 1 and author:
+            essential_parts.append(components[1])  # Keep author if available
+        
+        remaining_length = 240 - len(" -- ".join(essential_parts)) - len(f".{file_extension}") - 10  # Buffer
+        
+        # Add other components if they fit
+        for component in components[2:]:
+            if len(" -- " + component) <= remaining_length:
+                essential_parts.append(component)
+                remaining_length -= len(" -- " + component)
+            else:
+                break
+        
+        final_filename = " -- ".join(essential_parts) + f".{file_extension}"
+    
+    logger.info(f"Generated comprehensive filename: '{final_filename}'")
+    logger.info(f"=== END FILENAME GENERATION ===")
+    
+    return final_filenamepublisher' in corrected_metadata and (book_info.publisher == "Unknown Publisher" or not book_info.publisher):
             old_publisher = book_info.publisher
             book_info.publisher = corrected_metadata['publisher']
             logger.info(f"Corrected publisher: '{old_publisher}' -> '{book_info.publisher}'")
@@ -777,14 +955,17 @@ def update_download_progress(book_id: str, progress: float) -> None:
         book_display = book_id[:8]  # Fallback to short book ID
     
     # Log progress at meaningful milestones only (reduce log spam)
+    # Use threshold-based logging to prevent duplicate progress logs
+    progress_int = int(progress)
+    
     if progress >= 100.0:
         logger.info(f"Download complete: {book_display} (100%)")
-    elif progress >= 90.0 and int(progress) % 10 == 0:
-        logger.info(f"Download progress: {book_display} ({progress:.0f}%)")
-    elif progress >= 50.0 and int(progress) % 25 == 0:
-        logger.info(f"Download progress: {book_display} ({progress:.0f}%)")
-    elif progress >= 25.0 and int(progress) % 25 == 0:
-        logger.info(f"Download progress: {book_display} ({progress:.0f}%)")
+    elif progress_int >= 90 and progress_int % 10 == 0:
+        logger.info(f"Download progress: {book_display} ({progress_int}%)")
+    elif progress_int >= 50 and progress_int % 25 == 0:
+        logger.info(f"Download progress: {book_display} ({progress_int}%)")
+    elif progress_int >= 25 and progress_int % 25 == 0:
+        logger.info(f"Download progress: {book_display} ({progress_int}%)")
 
 def cancel_download(book_id: str) -> bool:
     """Cancel a download.
