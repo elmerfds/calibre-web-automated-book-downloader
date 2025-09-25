@@ -102,17 +102,18 @@ def download_url(link: str, size: str = "", progress_callback: Optional[Callable
         
         buffer = BytesIO()
         downloaded = 0
-        last_logged_percent = -1
         start_time = time.time()
+        last_progress_time = start_time
+        last_downloaded = 0
 
-        # Initialize the progress bar
+        # Disable tqdm to avoid interference with logs
         pbar = tqdm(total=total_size, unit='B', unit_scale=True, desc='Downloading', 
-                   disable=False, ncols=80, bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]')
+                   disable=True)  # Disabled to prevent log interference
         
         try:
             for chunk in response.iter_content(chunk_size=8192):  # Increased chunk size for better performance
                 if cancel_flag is not None and cancel_flag.is_set():
-                    logger.info(f"Download cancelled: {link}")
+                    logger.info("Download cancelled")
                     pbar.close()
                     return None
                 
@@ -120,22 +121,23 @@ def download_url(link: str, size: str = "", progress_callback: Optional[Callable
                 downloaded += len(chunk)
                 pbar.update(len(chunk))
                 
-                # Calculate and report progress
-                if total_size > 0:
+                # Calculate and report progress (less frequently to avoid log spam)
+                current_time = time.time()
+                if total_size > 0 and (current_time - last_progress_time >= 2.0):  # Update every 2 seconds
                     progress_percent = (downloaded / total_size) * 100.0
                     
-                    # Call progress callback
+                    # Calculate current speed
+                    time_diff = current_time - last_progress_time
+                    bytes_diff = downloaded - last_downloaded
+                    current_speed_mb = (bytes_diff / time_diff) / (1024 * 1024) if time_diff > 0 else 0
+                    
+                    # Call progress callback for backend tracking
                     if progress_callback is not None:
                         progress_callback(progress_percent)
                     
-                    # Log progress at key milestones (every 10% for console logs)
-                    current_percent = int(progress_percent)
-                    if current_percent > last_logged_percent and current_percent % 10 == 0:
-                        elapsed = time.time() - start_time
-                        speed = downloaded / elapsed if elapsed > 0 else 0
-                        speed_mb = speed / (1024 * 1024)
-                        logger.info(f"Download progress: {current_percent}% ({downloaded/1024/1024:.1f}/{total_size/1024/1024:.1f} MB) - {speed_mb:.1f} MB/s")
-                        last_logged_percent = current_percent
+                    # Update tracking variables
+                    last_progress_time = current_time
+                    last_downloaded = downloaded
         finally:
             pbar.close()
             
@@ -145,11 +147,15 @@ def download_url(link: str, size: str = "", progress_callback: Optional[Callable
         
         logger.info(f"Download completed: {final_size_mb:.2f} MB in {elapsed_time:.1f}s (avg {avg_speed_mb:.1f} MB/s)")
         
+        # Final progress callback
+        if progress_callback is not None and total_size > 0:
+            progress_callback(100.0)
+        
         # Validate download completion
         if total_size > 0 and downloaded < (total_size * 0.9):  # Allow 10% variance
             content_type = response.headers.get('content-type', '')
             if content_type.startswith('text/html'):
-                logger.warning(f"Download may have failed - received HTML content instead of file for {link}")
+                logger.warning(f"Download may have failed - received HTML content instead of file")
                 return None
             else:
                 logger.warning(f"Download size mismatch: expected {total_size/1024/1024:.2f} MB, got {final_size_mb:.2f} MB")
