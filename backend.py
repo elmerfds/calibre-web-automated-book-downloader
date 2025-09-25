@@ -663,7 +663,7 @@ def _download_book_with_cancellation(book_id: str, cancel_flag: Event) -> Option
             return None
             
         book_info = book_queue._book_data[book_id]
-        logger.info(f"📚 Starting download: '{book_info.title}' by {book_info.author} ({book_id})")
+        logger.info(f"📚 Starting download: '{book_info.title}' by {book_info.author} ({book_id[:8]})")
 
         # Generate comprehensive filename (now with early URL resolution)
         logger.info(f"=== FILENAME GENERATION DEBUG ===")
@@ -686,8 +686,17 @@ def _download_book_with_cancellation(book_id: str, cancel_flag: Event) -> Option
             return None
         
         logger.info(f"🔄 Starting file download for: {book_info.title}")
-        progress_callback = lambda progress: update_download_progress(book_id, progress)
-        success = book_manager.download_book(book_info, book_path, progress_callback, cancel_flag)
+        
+        # Create isolated progress callback with proper book ID binding
+        def isolated_progress_callback(progress: float):
+            """Isolated progress callback that ensures proper book ID association."""
+            try:
+                # Always use the captured book_id from this scope, never from global state
+                update_download_progress(book_id, progress)
+            except Exception as e:
+                logger.debug(f"Error in progress callback for {book_id[:8]}: {e}")
+        
+        success = book_manager.download_book(book_info, book_path, isolated_progress_callback, cancel_flag)
         
         # Stop progress updates
         cancel_flag.wait(0.1)  # Brief pause for progress thread cleanup
@@ -746,7 +755,7 @@ def _download_book_with_cancellation(book_id: str, cancel_flag: Event) -> Option
         if cancel_flag.is_set():
             logger.info(f"Download cancelled during error handling: {book_id}")
         else:
-            logger.error_trace(f"❌ Error downloading book '{book_info.title}': {e}")
+            logger.error_trace(f"❌ Error downloading book '{book_info.title}' ({book_id[:8]}): {e}")
         return None
 
 def update_download_progress(book_id: str, progress: float) -> None:
