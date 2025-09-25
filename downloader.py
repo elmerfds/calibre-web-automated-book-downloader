@@ -167,7 +167,7 @@ def download_url(link: str, size: str = "", progress_callback: Optional[Callable
             max_stream_retries = 2
             for stream_attempt in range(max_stream_retries):
                 try:
-                    for chunk in response.iter_content(chunk_size=16384):  # Larger chunks for better performance
+                    for chunk in response.iter_content(chunk_size=8192):  # Smaller chunks for more frequent progress updates
                         if cancel_flag is not None and cancel_flag.is_set():
                             logger.info("Download cancelled")
                             pbar.close()
@@ -177,26 +177,37 @@ def download_url(link: str, size: str = "", progress_callback: Optional[Callable
                         downloaded += len(chunk)
                         pbar.update(len(chunk))
                         
-                        # Calculate and report progress (call callback every chunk, log less frequently)
+                        # Calculate and report progress (call callback more frequently)
                         current_time = time.time()
                         if total_size > 0:
                             progress_percent = (downloaded / total_size) * 100.0
                             
-                            # Always call progress callback for backend tracking
+                            # Call progress callback more frequently for smoother updates
                             if progress_callback is not None:
                                 progress_callback(progress_percent)
                             
-                            # Log progress less frequently to avoid spam (every 5 seconds and at milestones)
+                            # Log progress less frequently to avoid spam (every 10 seconds and at major milestones)
                             current_progress_milestone = int(progress_percent // 5) * 5  # Round to 5% increments
-                            if (current_time - last_progress_time >= 5.0) or (current_progress_milestone > last_logged_progress and current_progress_milestone % 10 == 0):
+                            time_since_last_log = current_time - last_progress_time
+                            
+                            should_log = False
+                            
+                            # Log at major milestones (every 10%)
+                            if current_progress_milestone > last_logged_progress and current_progress_milestone % 10 == 0:
+                                should_log = True
+                                last_logged_progress = current_progress_milestone
+                            
+                            # Or log every 10 seconds regardless of progress
+                            elif time_since_last_log >= 10.0:
+                                should_log = True
+                            
+                            if should_log:
                                 # Calculate current speed
                                 time_diff = current_time - last_progress_time
                                 bytes_diff = downloaded - last_downloaded
                                 current_speed_mb = (bytes_diff / time_diff) / (1024 * 1024) if time_diff > 0 else 0
                                 
-                                if current_progress_milestone > last_logged_progress and current_progress_milestone % 10 == 0:
-                                    logger.debug(f"Download progress: {current_progress_milestone}% ({downloaded/1024/1024:.1f}/{total_size/1024/1024:.1f} MB) - {current_speed_mb:.1f} MB/s")
-                                    last_logged_progress = current_progress_milestone
+                                logger.debug(f"Download progress: {current_progress_milestone}% ({downloaded/1024/1024:.1f}/{total_size/1024/1024:.1f} MB) - {current_speed_mb:.1f} MB/s")
                                 
                                 # Update tracking variables
                                 last_progress_time = current_time
