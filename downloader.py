@@ -85,13 +85,14 @@ def download_url(link: str, size: str = "", progress_callback: Optional[Callable
     try:
         logger.info(f"Starting download from: {link}")
         
-        # Add retry logic for rate limiting
+        # Add retry logic for rate limiting and timeouts
         max_retries = 3
         base_delay = 30  # Start with 30 second delay
         
         for attempt in range(max_retries):
             try:
-                response = requests.get(link, stream=True, proxies=PROXIES, timeout=30)
+                # Increased timeout for better reliability
+                response = requests.get(link, stream=True, proxies=PROXIES, timeout=(30, 120))  # 30s connect, 120s read
                 response.raise_for_status()
                 break  # Success, exit retry loop
                 
@@ -117,14 +118,24 @@ def download_url(link: str, size: str = "", progress_callback: Optional[Callable
                 else:
                     # Other HTTP error, don't retry
                     raise
-            except requests.exceptions.Timeout:
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
                 if attempt < max_retries - 1:
-                    wait_time = 10 * (attempt + 1)
-                    logger.warning(f"Download timeout, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})")
-                    time.sleep(wait_time)
+                    wait_time = 15 * (attempt + 1)  # Progressive delay: 15s, 30s, 45s
+                    error_type = "timeout" if "timeout" in str(e).lower() else "connection error"
+                    logger.warning(f"Download {error_type}, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})")
+                    
+                    # Check for cancellation during wait
+                    if cancel_flag:
+                        for _ in range(wait_time):
+                            if cancel_flag.is_set():
+                                logger.info("Download cancelled during retry wait")
+                                return None
+                            time.sleep(1)
+                    else:
+                        time.sleep(wait_time)
                     continue
                 else:
-                    logger.error(f"Download timeout after {max_retries} attempts")
+                    logger.error(f"Download failed after {max_retries} attempts: {e}")
                     raise
 
         # Calculate expected size
@@ -145,41 +156,69 @@ def download_url(link: str, size: str = "", progress_callback: Optional[Callable
         start_time = time.time()
         last_progress_time = start_time
         last_downloaded = 0
+        last_logged_progress = -1
 
         # Disable tqdm to avoid interference with logs
         pbar = tqdm(total=total_size, unit='B', unit_scale=True, desc='Downloading', 
                    disable=True)  # Disabled to prevent log interference
         
         try:
-            for chunk in response.iter_content(chunk_size=8192):  # Increased chunk size for better performance
-                if cancel_flag is not None and cancel_flag.is_set():
-                    logger.info("Download cancelled")
-                    pbar.close()
-                    return None
-                
-                buffer.write(chunk)
-                downloaded += len(chunk)
-                pbar.update(len(chunk))
-                
-                # Calculate and report progress (call callback every chunk, log less frequently)
-                current_time = time.time()
-                if total_size > 0:
-                    progress_percent = (downloaded / total_size) * 100.0
-                    
-                    # Always call progress callback for backend tracking
-                    if progress_callback is not None:
-                        progress_callback(progress_percent)
-                    
-                    # Log progress less frequently to avoid spam (every 2 seconds)
-                    if current_time - last_progress_time >= 2.0:
-                        # Calculate current speed
-                        time_diff = current_time - last_progress_time
-                        bytes_diff = downloaded - last_downloaded
-                        current_speed_mb = (bytes_diff / time_diff) / (1024 * 1024) if time_diff > 0 else 0
+            # Wrap the streaming in timeout retry logic
+            max_stream_retries = 2
+            for stream_attempt in range(max_stream_retries):
+                try:
+                    for chunk in response.iter_content(chunk_size=16384):  # Larger chunks for better performance
+                        if cancel_flag is not None and cancel_flag.is_set():
+                            logger.info("Download cancelled")
+                            pbar.close()
+                            return None
                         
-                        # Update tracking variables
-                        last_progress_time = current_time
-                        last_downloaded = downloaded
+                        buffer.write(chunk)
+                        downloaded += len(chunk)
+                        pbar.update(len(chunk))
+                        
+                        # Calculate and report progress (call callback every chunk, log less frequently)
+                        current_time = time.time()
+                        if total_size > 0:
+                            progress_percent = (downloaded / total_size) * 100.0
+                            
+                            # Always call progress callback for backend tracking
+                            if progress_callback is not None:
+                                progress_callback(progress_percent)
+                            
+                            # Log progress less frequently to avoid spam (every 5 seconds and at milestones)
+                            current_progress_milestone = int(progress_percent // 5) * 5  # Round to 5% increments
+                            if (current_time - last_progress_time >= 5.0) or (current_progress_milestone > last_logged_progress and current_progress_milestone % 10 == 0):
+                                # Calculate current speed
+                                time_diff = current_time - last_progress_time
+                                bytes_diff = downloaded - last_downloaded
+                                current_speed_mb = (bytes_diff / time_diff) / (1024 * 1024) if time_diff > 0 else 0
+                                
+                                if current_progress_milestone > last_logged_progress and current_progress_milestone % 10 == 0:
+                                    logger.debug(f"Download progress: {current_progress_milestone}% ({downloaded/1024/1024:.1f}/{total_size/1024/1024:.1f} MB) - {current_speed_mb:.1f} MB/s")
+                                    last_logged_progress = current_progress_milestone
+                                
+                                # Update tracking variables
+                                last_progress_time = current_time
+                                last_downloaded = downloaded
+                    
+                    # If we reach here, streaming completed successfully
+                    break
+                    
+                except (requests.exceptions.ConnectionError, requests.exceptions.ChunkedEncodingError) as e:
+                    if stream_attempt < max_stream_retries - 1 and "timed out" in str(e).lower():
+                        logger.warning(f"Stream interrupted at {downloaded/1024/1024:.1f}MB, retrying... (attempt {stream_attempt + 1}/{max_stream_retries})")
+                        # Note: We can't resume the download easily, so we start over
+                        # In a future update, we could implement Range header requests for resume
+                        buffer = BytesIO()
+                        downloaded = 0
+                        
+                        # Get a fresh response
+                        response = requests.get(link, stream=True, proxies=PROXIES, timeout=(30, 120))
+                        response.raise_for_status()
+                        continue
+                    else:
+                        raise
         finally:
             pbar.close()
             
