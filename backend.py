@@ -59,10 +59,22 @@ def _extract_metadata_from_download_url(url: str) -> Dict[str, str]:
         logger.debug(f"Invalid URL format: {url[:50]}...")
         return metadata
     
-    # Decode URL-encoded characters
+    # Decode URL-encoded characters more thoroughly
     try:
-        decoded_url = url.replace('%20', ' ').replace('%2C', ',').replace('%3A', ':')
+        import urllib.parse
+        # First decode the URL properly
+        decoded_url = urllib.parse.unquote(url)
+        
+        # Additional cleanup for common encoding issues
+        decoded_url = decoded_url.replace('%2C', ',').replace('%3A', ':')
         decoded_url = decoded_url.replace('%28', '(').replace('%29', ')')
+        decoded_url = decoded_url.replace('%5C', '/').replace('\\', '/')  # Fix Windows paths
+        
+        # Remove any remaining path fragments that look like file paths
+        # Pattern to match things like "P:/kat_magz/50 Assorted Books" at start of titles
+        decoded_url = re.sub(r'/[A-Z]:%5C[^/]+%5C[^/]+%5C', '/', decoded_url)
+        decoded_url = re.sub(r'/[A-Z]:[^/]+/', '/', decoded_url)
+        
     except Exception as e:
         logger.debug(f"Error decoding URL: {e}")
         return metadata
@@ -78,6 +90,10 @@ def _extract_metadata_from_download_url(url: str) -> Dict[str, str]:
         location_year = match.group(3).strip()
         publisher = match.group(4).strip()
         isbn_or_more = match.group(5).strip()
+        
+        # Additional title cleanup - remove file path remnants
+        title = re.sub(r'^[A-Z]:[\\\/][^\\\/]+[\\\/]', '', title)  # Remove "P:\folder\"
+        title = re.sub(r'^[^\\\/]*[\\\/]', '', title)  # Remove any remaining path prefix
         
         # Extract year from location_year
         year_match = re.search(r'\b(19|20)\d{2}\b', location_year)
@@ -113,6 +129,10 @@ def _extract_metadata_from_download_url(url: str) -> Dict[str, str]:
         if match:
             title = match.group(1).strip()
             author = match.group(2).strip() if len(match.groups()) > 1 else ""
+            
+            # Clean up title
+            title = re.sub(r'^[A-Z]:[\\\/][^\\\/]+[\\\/]', '', title)
+            title = re.sub(r'^[^\\\/]*[\\\/]', '', title)
             
             if _is_valid_title(title):
                 metadata['title'] = title
@@ -730,25 +750,32 @@ def _download_book_with_cancellation(book_id: str, cancel_flag: Event) -> Option
         return None
 
 def update_download_progress(book_id: str, progress: float) -> None:
-    """Update download progress."""
+    """Update download progress with proper book ID tracking."""
     book_queue.update_progress(book_id, progress)
     
-    # Get book title for better logging (truncate book_id for readability)
+    # Get book title for better logging (ensure we're using the correct book)
     try:
         book_info = book_queue._book_data.get(book_id)
-        book_title = book_info.title[:30] + "..." if book_info and len(book_info.title) > 30 else (book_info.title if book_info else book_id[:8])
-    except:
-        book_title = book_id[:8]  # Fallback to short book ID
+        if book_info:
+            # Use the original title from when book was queued, not extracted title
+            book_title = book_info.title[:30] + "..." if len(book_info.title) > 30 else book_info.title
+            # Add book ID suffix for tracking in logs
+            book_display = f"{book_title} [{book_id[:8]}]"
+        else:
+            book_display = f"Unknown Book [{book_id[:8]}]"
+    except Exception as e:
+        logger.debug(f"Error getting book title for progress: {e}")
+        book_display = book_id[:8]  # Fallback to short book ID
     
     # Log progress at meaningful milestones only (reduce log spam)
     if progress >= 100.0:
-        logger.info(f"Download complete: {book_title} (100%)")
+        logger.info(f"Download complete: {book_display} (100%)")
     elif progress >= 90.0 and int(progress) % 10 == 0:
-        logger.info(f"Download progress: {book_title} ({progress:.0f}%)")
+        logger.info(f"Download progress: {book_display} ({progress:.0f}%)")
     elif progress >= 50.0 and int(progress) % 25 == 0:
-        logger.info(f"Download progress: {book_title} ({progress:.0f}%)")
+        logger.info(f"Download progress: {book_display} ({progress:.0f}%)")
     elif progress >= 25.0 and int(progress) % 25 == 0:
-        logger.info(f"Download progress: {book_title} ({progress:.0f}%)")
+        logger.info(f"Download progress: {book_display} ({progress:.0f}%)")
 
 def cancel_download(book_id: str) -> bool:
     """Cancel a download.
