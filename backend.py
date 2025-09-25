@@ -834,6 +834,29 @@ def _book_info_to_dict(book: BookInfo) -> Dict[str, Any]:
         if value is not None
     }
 
+def _extract_format_from_url(url: str) -> Optional[str]:
+    """Extract file format from download URL."""
+    if not url:
+        return None
+        
+    try:
+        # Remove query parameters and fragments
+        clean_url = url.split('?')[0].split('#')[0]
+        
+        # Extract extension from URL
+        if '.' in clean_url:
+            extension = clean_url.split('.')[-1].lower()
+            
+            # Validate it's a known ebook format
+            valid_formats = ['epub', 'mobi', 'azw3', 'pdf', 'fb2', 'djvu', 'cbz', 'cbr', 'tpz']
+            if extension in valid_formats:
+                return extension
+                
+        return None
+    except Exception as e:
+        logger.debug(f"Error extracting format from URL: {e}")
+        return None
+
 def _download_book_with_cancellation(book_id: str, cancel_flag: Event) -> Optional[str]:
     """Download and process a book with cancellation support.
     
@@ -851,9 +874,23 @@ def _download_book_with_cancellation(book_id: str, cancel_flag: Event) -> Option
             return None
             
         book_info = book_queue._book_data[book_id]
-        logger.info(f"📚 Starting download: '{book_info.title}' by {book_info.author} ({book_id[:8]})")
+        logger.info(f"Starting download: '{book_info.title}' by {book_info.author} ({book_id[:8]})")
 
-        # Generate comprehensive filename (now with early URL resolution)
+        # STEP 1: Try to determine actual format from download URLs BEFORE filename generation
+        actual_format = book_info.format or "epub"  # Default fallback
+        
+        if book_info.download_urls:
+            # Check first available download URL for format
+            for url in book_info.download_urls[:3]:  # Check first 3 URLs
+                url_format = _extract_format_from_url(url)
+                if url_format:
+                    actual_format = url_format
+                    if actual_format != book_info.format:
+                        logger.info(f"Format correction from URL: {book_info.format} -> {actual_format}")
+                        book_info.format = actual_format
+                    break
+        
+        # Generate comprehensive filename (now with corrected format)
         logger.info(f"=== FILENAME GENERATION DEBUG ===")
         logger.info(f"USE_BOOK_TITLE setting: {USE_BOOK_TITLE} (type: {type(USE_BOOK_TITLE)})")
         
@@ -863,7 +900,7 @@ def _download_book_with_cancellation(book_id: str, cancel_flag: Event) -> Option
             book_name = f"{book_id}.{book_info.format}"
             logger.info(f"Using book ID for filename: '{book_name}'")
         
-        logger.info(f"📁 Final filename: '{book_name}'")
+        logger.info(f"Final filename: '{book_name}'")
         logger.info(f"=== END FILENAME DEBUG ===")
         
         book_path = TMP_DIR / book_name
@@ -873,7 +910,7 @@ def _download_book_with_cancellation(book_id: str, cancel_flag: Event) -> Option
             logger.info(f"Download cancelled before book manager call: {book_id}")
             return None
         
-        logger.info(f"🔄 Starting file download for: {book_info.title}")
+        logger.info(f"Starting file download for: {book_info.title}")
         
         # Create isolated progress callback with proper book ID binding
         def isolated_progress_callback(progress: float):
@@ -906,44 +943,44 @@ def _download_book_with_cancellation(book_id: str, cancel_flag: Event) -> Option
                 book_path.unlink()
             return None
 
-        logger.info(f"✅ Download successful, processing file: {book_info.title}")
+        logger.info(f"Download successful, processing file: {book_info.title}")
 
-        # IMPORTANT: Fix file extension if there's a mismatch
+        # STEP 2: Fallback file format detection if URL extraction failed or was wrong
         if book_path.exists():
-            # Check if the downloaded file extension matches the actual file format
-            actual_format = _detect_file_format(book_path)
-            expected_format = book_info.format or "epub"
+            detected_format = _detect_file_format(book_path)
             
-            if actual_format and actual_format != expected_format:
-                logger.warning(f"Format mismatch detected: expected {expected_format}, got {actual_format}")
+            if detected_format and detected_format != actual_format:
+                logger.warning(f"Format mismatch detected: URL suggested {actual_format}, file is actually {detected_format}")
                 
                 # Update the book_info format to match reality
-                book_info.format = actual_format
+                book_info.format = detected_format
                 
                 # Regenerate filename with correct extension
                 if USE_BOOK_TITLE:
                     corrected_book_name = _generate_comprehensive_filename(book_info, book_id)
                 else:
-                    corrected_book_name = f"{book_id}.{actual_format}"
+                    corrected_book_name = f"{book_id}.{detected_format}"
                 
                 corrected_book_path = TMP_DIR / corrected_book_name
                 
                 # Rename the file to have the correct extension
                 if corrected_book_path != book_path:
-                    logger.info(f"🔧 Correcting filename: {book_path.name} -> {corrected_book_name}")
+                    logger.info(f"Correcting filename: {book_path.name} -> {corrected_book_name}")
                     os.rename(book_path, corrected_book_path)
                     book_path = corrected_book_path
                     book_name = corrected_book_name
+            else:
+                logger.debug(f"Format validation passed: {actual_format}")
 
         if CUSTOM_SCRIPT:
-            logger.info(f"🔧 Running custom script: {CUSTOM_SCRIPT}")
+            logger.info(f"Running custom script: {CUSTOM_SCRIPT}")
             subprocess.run([CUSTOM_SCRIPT, book_path])
             
         intermediate_path = INGEST_DIR / f"{book_id}.crdownload"
         final_path = INGEST_DIR / book_name
         
         if os.path.exists(book_path):
-            logger.info(f"📂 Moving book to ingest directory: {book_path.name} -> {final_path.name}")
+            logger.info(f"Moving book to ingest directory: {book_path.name} -> {final_path.name}")
             try:
                 shutil.move(book_path, intermediate_path)
             except Exception as e:
@@ -963,14 +1000,14 @@ def _download_book_with_cancellation(book_id: str, cancel_flag: Event) -> Option
                 return None
                 
             os.rename(intermediate_path, final_path)
-            logger.info(f"🎉 Download completed successfully: '{book_info.title}' saved as '{final_path.name}'")
+            logger.info(f"Download completed successfully: '{book_info.title}' saved as '{final_path.name}'")
             
         return str(final_path)
     except Exception as e:
         if cancel_flag.is_set():
             logger.info(f"Download cancelled during error handling: {book_id}")
         else:
-            logger.error_trace(f"❌ Error downloading book '{book_info.title}' ({book_id[:8]}): {e}")
+            logger.error_trace(f"Error downloading book '{book_info.title}' ({book_id[:8]}): {e}")
         return None
 
 
