@@ -226,10 +226,10 @@ def download_url(link: str, size: str = "", progress_callback: Optional[Callable
         final_size_mb = downloaded / (1024 * 1024)
         avg_speed_mb = final_size_mb / elapsed_time if elapsed_time > 0 else 0
         
-        logger.info(f"Download completed: {final_size_mb:.2f} MB in {elapsed_time:.1f}s (avg {avg_speed_mb:.1f} MB/s)")
+        logger.info(f"Download completed: {final_size_mb:.2f} MB in {elapsed_time:.1f}s (avg {avg_speed_mb:.2f} MB/s)")
         
-        # Final progress callback
-        if progress_callback is not None and total_size > 0:
+        # Final progress callback - only call once at exactly 100%
+        if progress_callback is not None:
             progress_callback(100.0)
         
         # Validate download completion
