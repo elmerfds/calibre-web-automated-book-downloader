@@ -388,26 +388,25 @@ def _generate_comprehensive_filename(book_info: BookInfo, book_id: str) -> str:
             book_info.title = corrected_metadata['title']
             logger.info(f"Corrected title: '{old_title}' -> '{book_info.title}'")
             
-        if 'author' in corrected_metadata and (book_info.author == "Unknown Author" or not book_info.author):
-            old_author = book_info.author
-            book_info.author = corrected_metadata['author']
-            logger.info(f"Corrected author: '{old_author}' -> '{book_info.author}'")
-            
-        if 'year' in corrected_metadata and not book_info.year:
-            book_info.year = corrected_metadata['year']
-            logger.info(f"Added year: '{book_info.year}'")
-            
-        if 'publisher' in corrected_metadata and (book_info.publisher == "Unknown Publisher" or not book_info.publisher):
-            old_publisher = book_info.publisher
-            book_info.publisher = corrected_metadata['publisher']
-            logger.info(f"Corrected publisher: '{old_publisher}' -> '{book_info.publisher}'")
-            
-        if 'isbn' in corrected_metadata:
-            if not book_info.info or 'ISBN' not in book_info.info:
-                book_info.info = {'ISBN': [corrected_metadata['isbn']]}
-            logger.info(f"Added ISBN: '{corrected_metadata['isbn']}'")
     else:
-        logger.info("No corrected metadata found from URLs, using original book info")publisher' in corrected_metadata and (book_info.publisher == "Unknown Publisher" or not book_info.publisher):
+        logger.info("No corrected metadata found from URLs, using original book info")
+    
+    # STEP 3: Clean up any URL encoding in existing title/author (from page parsing)
+    if book_info.title:
+        original_title = book_info.title
+        # Decode URL entities in title
+        book_info.title = book_info.title.replace('%2C', ',').replace('%27', "'").replace('%3A', ':')
+        book_info.title = book_info.title.replace('%28', '(').replace('%29', ')').replace('%20', ' ')
+        if original_title != book_info.title:
+            logger.info(f"Decoded title URL entities: '{original_title}' -> '{book_info.title}'")
+    
+    if book_info.author:
+        original_author = book_info.author  
+        # Decode URL entities in author
+        book_info.author = book_info.author.replace('%2C', ',').replace('%27', "'").replace('%3A', ':')
+        book_info.author = book_info.author.replace('%28', '(').replace('%29', ')').replace('%20', ' ')
+        if original_author != book_info.author:
+            logger.info(f"Decoded author URL entities: '{original_author}' -> '{book_info.author}'")publisher' in corrected_metadata and (book_info.publisher == "Unknown Publisher" or not book_info.publisher):
             old_publisher = book_info.publisher
             book_info.publisher = corrected_metadata['publisher']
             logger.info(f"Corrected publisher: '{old_publisher}' -> '{book_info.publisher}'")
