@@ -874,7 +874,7 @@ def _download_book_with_cancellation(book_id: str, cancel_flag: Event) -> Option
             return None
             
         book_info = book_queue._book_data[book_id]
-        logger.info(f"Starting download: '{book_info.title}' by {book_info.author} ({book_id[:8]})")
+        logger.info(f"📚 Starting download: '{book_info.title}' by {book_info.author} ({book_id[:8]})")
 
         # STEP 1: Try to determine actual format from download URLs BEFORE filename generation
         actual_format = book_info.format or "epub"  # Default fallback
@@ -900,7 +900,7 @@ def _download_book_with_cancellation(book_id: str, cancel_flag: Event) -> Option
             book_name = f"{book_id}.{book_info.format}"
             logger.info(f"Using book ID for filename: '{book_name}'")
         
-        logger.info(f"Final filename: '{book_name}'")
+        logger.info(f"📁 Final filename: '{book_name}'")
         logger.info(f"=== END FILENAME DEBUG ===")
         
         book_path = TMP_DIR / book_name
@@ -910,7 +910,7 @@ def _download_book_with_cancellation(book_id: str, cancel_flag: Event) -> Option
             logger.info(f"Download cancelled before book manager call: {book_id}")
             return None
         
-        logger.info(f"Starting file download for: {book_info.title}")
+        logger.info(f"🔄 Starting file download for: {book_info.title}")
         
         # Create isolated progress callback with proper book ID binding
         def isolated_progress_callback(progress: float):
@@ -943,7 +943,7 @@ def _download_book_with_cancellation(book_id: str, cancel_flag: Event) -> Option
                 book_path.unlink()
             return None
 
-        logger.info(f"Download successful, processing file: {book_info.title}")
+        logger.info(f"✅ Download successful, processing file: {book_info.title}")
 
         # STEP 2: Fallback file format detection if URL extraction failed or was wrong
         if book_path.exists():
@@ -965,7 +965,7 @@ def _download_book_with_cancellation(book_id: str, cancel_flag: Event) -> Option
                 
                 # Rename the file to have the correct extension
                 if corrected_book_path != book_path:
-                    logger.info(f"Correcting filename: {book_path.name} -> {corrected_book_name}")
+                    logger.info(f"🔧 Correcting filename: {book_path.name} -> {corrected_book_name}")
                     os.rename(book_path, corrected_book_path)
                     book_path = corrected_book_path
                     book_name = corrected_book_name
@@ -973,14 +973,14 @@ def _download_book_with_cancellation(book_id: str, cancel_flag: Event) -> Option
                 logger.debug(f"Format validation passed: {actual_format}")
 
         if CUSTOM_SCRIPT:
-            logger.info(f"Running custom script: {CUSTOM_SCRIPT}")
+            logger.info(f"🔧 Running custom script: {CUSTOM_SCRIPT}")
             subprocess.run([CUSTOM_SCRIPT, book_path])
             
         intermediate_path = INGEST_DIR / f"{book_id}.crdownload"
         final_path = INGEST_DIR / book_name
         
         if os.path.exists(book_path):
-            logger.info(f"Moving book to ingest directory: {book_path.name} -> {final_path.name}")
+            logger.info(f"📂 Moving book to ingest directory: {book_path.name} -> {final_path.name}")
             try:
                 shutil.move(book_path, intermediate_path)
             except Exception as e:
@@ -1000,14 +1000,14 @@ def _download_book_with_cancellation(book_id: str, cancel_flag: Event) -> Option
                 return None
                 
             os.rename(intermediate_path, final_path)
-            logger.info(f"Download completed successfully: '{book_info.title}' saved as '{final_path.name}'")
+            logger.info(f"🎉 Download completed successfully: '{book_info.title}' saved as '{final_path.name}'")
             
         return str(final_path)
     except Exception as e:
         if cancel_flag.is_set():
             logger.info(f"Download cancelled during error handling: {book_id}")
         else:
-            logger.error_trace(f"Error downloading book '{book_info.title}' ({book_id[:8]}): {e}")
+            logger.error_trace(f"❌ Error downloading book '{book_info.title}' ({book_id[:8]}): {e}")
         return None
 
 
