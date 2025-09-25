@@ -407,6 +407,16 @@ def _generate_comprehensive_filename(book_info: BookInfo, book_id: str) -> str:
                 book_info.info = {'ISBN': [corrected_metadata['isbn']]}
             logger.info(f"Added ISBN: '{corrected_metadata['isbn']}'")
     else:
+        logger.info("No corrected metadata found from URLs, using original book info")publisher' in corrected_metadata and (book_info.publisher == "Unknown Publisher" or not book_info.publisher):
+            old_publisher = book_info.publisher
+            book_info.publisher = corrected_metadata['publisher']
+            logger.info(f"Corrected publisher: '{old_publisher}' -> '{book_info.publisher}'")
+            
+        if 'isbn' in corrected_metadata:
+            if not book_info.info or 'ISBN' not in book_info.info:
+                book_info.info = {'ISBN': [corrected_metadata['isbn']]}
+            logger.info(f"Added ISBN: '{corrected_metadata['isbn']}'")
+    else:
         logger.info("No corrected metadata found from URLs, using original book info")
     
     # STEP 3: Clean up any URL encoding in existing title/author (from page parsing)
@@ -898,6 +908,33 @@ def _download_book_with_cancellation(book_id: str, cancel_flag: Event) -> Option
 
         logger.info(f"✅ Download successful, processing file: {book_info.title}")
 
+        # IMPORTANT: Fix file extension if there's a mismatch
+        if book_path.exists():
+            # Check if the downloaded file extension matches the actual file format
+            actual_format = _detect_file_format(book_path)
+            expected_format = book_info.format or "epub"
+            
+            if actual_format and actual_format != expected_format:
+                logger.warning(f"Format mismatch detected: expected {expected_format}, got {actual_format}")
+                
+                # Update the book_info format to match reality
+                book_info.format = actual_format
+                
+                # Regenerate filename with correct extension
+                if USE_BOOK_TITLE:
+                    corrected_book_name = _generate_comprehensive_filename(book_info, book_id)
+                else:
+                    corrected_book_name = f"{book_id}.{actual_format}"
+                
+                corrected_book_path = TMP_DIR / corrected_book_name
+                
+                # Rename the file to have the correct extension
+                if corrected_book_path != book_path:
+                    logger.info(f"🔧 Correcting filename: {book_path.name} -> {corrected_book_name}")
+                    os.rename(book_path, corrected_book_path)
+                    book_path = corrected_book_path
+                    book_name = corrected_book_name
+
         if CUSTOM_SCRIPT:
             logger.info(f"🔧 Running custom script: {CUSTOM_SCRIPT}")
             subprocess.run([CUSTOM_SCRIPT, book_path])
@@ -934,6 +971,45 @@ def _download_book_with_cancellation(book_id: str, cancel_flag: Event) -> Option
             logger.info(f"Download cancelled during error handling: {book_id}")
         else:
             logger.error_trace(f"❌ Error downloading book '{book_info.title}' ({book_id[:8]}): {e}")
+        return None
+
+
+def _detect_file_format(file_path: Path) -> Optional[str]:
+    """Detect the actual file format based on file content headers."""
+    try:
+        with open(file_path, 'rb') as f:
+            header = f.read(16)
+        
+        # Check file signatures
+        if header.startswith(b'PK\x03\x04'):
+            # ZIP-based format (EPUB is a ZIP file)
+            return "epub"
+        elif header.startswith(b'TPZ'):
+            # Topaz format
+            return "tpz"
+        elif b'BOOKMOBI' in header[:50] or header.startswith(b'TPZ'):
+            # MOBI format
+            return "mobi"
+        elif header.startswith(b'%PDF'):
+            # PDF format
+            return "pdf"
+        elif header.startswith(b'ATAB'):
+            # AZW3 format
+            return "azw3"
+        else:
+            # Try to read more data to detect MOBI
+            f.seek(0)
+            first_kb = f.read(1024)
+            if b'BOOKMOBI' in first_kb or b'TPZ' in first_kb:
+                return "mobi"
+            elif b'ATAB' in first_kb:
+                return "azw3"
+            
+        # If we can't detect, return None to keep original format
+        return None
+        
+    except Exception as e:
+        logger.debug(f"Error detecting file format for {file_path}: {e}")
         return None
 
 def update_download_progress(book_id: str, progress: float) -> None:
