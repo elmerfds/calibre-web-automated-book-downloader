@@ -84,8 +84,48 @@ def download_url(link: str, size: str = "", progress_callback: Optional[Callable
     """
     try:
         logger.info(f"Starting download from: {link}")
-        response = requests.get(link, stream=True, proxies=PROXIES)
-        response.raise_for_status()
+        
+        # Add retry logic for rate limiting
+        max_retries = 3
+        base_delay = 30  # Start with 30 second delay
+        
+        for attempt in range(max_retries):
+            try:
+                response = requests.get(link, stream=True, proxies=PROXIES, timeout=30)
+                response.raise_for_status()
+                break  # Success, exit retry loop
+                
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 429:  # Rate limited
+                    if attempt < max_retries - 1:  # Not the last attempt
+                        wait_time = base_delay * (2 ** attempt)  # Exponential backoff
+                        logger.warning(f"Rate limited (429), waiting {wait_time}s before retry {attempt + 1}/{max_retries}")
+                        
+                        # Check for cancellation during wait
+                        if cancel_flag:
+                            for _ in range(wait_time):
+                                if cancel_flag.is_set():
+                                    logger.info("Download cancelled during rate limit wait")
+                                    return None
+                                time.sleep(1)
+                        else:
+                            time.sleep(wait_time)
+                        continue
+                    else:
+                        logger.error(f"Rate limit exceeded after {max_retries} attempts")
+                        raise
+                else:
+                    # Other HTTP error, don't retry
+                    raise
+            except requests.exceptions.Timeout:
+                if attempt < max_retries - 1:
+                    wait_time = 10 * (attempt + 1)
+                    logger.warning(f"Download timeout, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    logger.error(f"Download timeout after {max_retries} attempts")
+                    raise
 
         # Calculate expected size
         total_size : float = 0.0
