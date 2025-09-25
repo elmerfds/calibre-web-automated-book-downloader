@@ -81,6 +81,35 @@ def _extract_metadata_from_download_url(url: str) -> Dict[str, str]:
     
     logger.debug(f"Attempting to extract metadata from URL: {decoded_url[:200]}...")
     
+    # NEW: Enhanced pattern for Anna's Archive URLs like:
+    # /Orbital%20--%20Samantha%20Harvey%20--%20Grove%20Atlantic%20--%20e57f992fac9289868e5dbbd5ccc723f0%20--%20Anna%E2%80%99s%20Archive.mobi
+    anna_pattern = r'/([^/]+?)(?:%20|\s+)--(?:%20|\s+)([^/]+?)(?:%20|\s+)--(?:%20|\s+)([^/]+?)(?:%20|\s+)--(?:%20|\s+)[a-f0-9]{32}(?:%20|\s+)--(?:%20|\s+)[^/]*\.(epub|mobi|azw3|pdf|fb2|djvu|cbz|cbr|tpz)'
+    
+    match = re.search(anna_pattern, decoded_url, re.IGNORECASE)
+    if match:
+        title = match.group(1).strip()
+        author = match.group(2).strip()
+        publisher = match.group(3).strip()
+        format_ext = match.group(4).strip().lower()
+        
+        # Clean up URL encoding
+        title = title.replace('%20', ' ').replace('%2C', ',').replace('%27', "'").replace('%3A', ':')
+        title = title.replace('%28', '(').replace('%29', ')')
+        author = author.replace('%20', ' ').replace('%2C', ',').replace('%27', "'")
+        publisher = publisher.replace('%20', ' ')
+        
+        if _is_valid_title(title):
+            metadata['title'] = title
+        if _is_valid_author(author):
+            metadata['author'] = author
+        if publisher and len(publisher.strip()) > 2 and not re.match(r'^[a-f0-9]{32}$', publisher.strip()):
+            metadata['publisher'] = publisher
+        if format_ext:
+            metadata['format'] = format_ext
+            
+        logger.info(f"Extracted from Anna's Archive URL - Title: '{title}', Author: '{author}', Publisher: '{publisher}', Format: '{format_ext}'")
+        return metadata
+    
     # Pattern: Title -- Author -- Location, Year -- Publisher -- ISBN
     # Example: Then She Was Gone -- Lisa Jewell -- New York, 2017 -- Penguin Random House UK -- 9781473538337
     full_pattern = r'/([^/]+?)\s*--\s*([^/]+?)\s*--\s*([^/]+?)\s*--\s*([^/]+?)\s*--\s*([^/]+?)(?:\s*--|\s*\.(epub|mobi|azw3|pdf|fb2|djvu|cbz|cbr|tpz))'
@@ -122,35 +151,6 @@ def _extract_metadata_from_download_url(url: str) -> Dict[str, str]:
             
         logger.info(f"Extracted from download URL - Title: '{title}', Author: '{author}', Year: '{year}', Publisher: '{publisher}', ISBN: '{isbn}'")
         
-        return metadata
-    
-    # NEW: Enhanced pattern for Anna's Archive URLs like:
-    # /Orbital%20--%20Samantha%20Harvey%20--%20Grove%20Atlantic%20--%20e57f992fac9289868e5dbbd5ccc723f0%20--%20Anna%E2%80%99s%20Archive.mobi
-    anna_pattern = r'/([^/]+?)(?:%20|\s+)--(?:%20|\s+)([^/]+?)(?:%20|\s+)--(?:%20|\s+)([^/]+?)(?:%20|\s+)--(?:%20|\s+)[a-f0-9]{32}(?:%20|\s+)--(?:%20|\s+)[^/]*\.(epub|mobi|azw3|pdf|fb2|djvu|cbz|cbr|tpz)'
-    
-    match = re.search(anna_pattern, decoded_url, re.IGNORECASE)
-    if match:
-        title = match.group(1).strip()
-        author = match.group(2).strip()
-        publisher = match.group(3).strip()
-        format_ext = match.group(4).strip().lower()
-        
-        # Clean up URL encoding
-        title = title.replace('%20', ' ').replace('%2C', ',').replace('%27', "'").replace('%3A', ':')
-        title = title.replace('%28', '(').replace('%29', ')')
-        author = author.replace('%20', ' ').replace('%2C', ',').replace('%27', "'")
-        publisher = publisher.replace('%20', ' ')
-        
-        if _is_valid_title(title):
-            metadata['title'] = title
-        if _is_valid_author(author):
-            metadata['author'] = author
-        if publisher and len(publisher.strip()) > 2:
-            metadata['publisher'] = publisher
-        if format_ext:
-            metadata['format'] = format_ext
-            
-        logger.info(f"Extracted from Anna's Archive URL - Title: '{title}', Author: '{author}', Publisher: '{publisher}', Format: '{format_ext}'")
         return metadata
     
     # Fallback patterns for simpler URL structures
@@ -551,20 +551,22 @@ def _generate_comprehensive_filename(book_info: BookInfo, book_id: str) -> str:
     publisher = ""
     if book_info.publisher and book_info.publisher != "Unknown Publisher":
         pub_clean = book_info.publisher.strip()
-        # Simplify long publisher names
-        if "penguin" in pub_clean.lower():
-            if "random house" in pub_clean.lower():
-                publisher = "Penguin Random House"
-            elif "uk" in pub_clean.lower() or "britain" in pub_clean.lower():
-                publisher = "Penguin Random House UK"
+        # Skip MD5 hashes that got misidentified as publisher
+        if not re.match(r'^[a-f0-9]{32}$', pub_clean):
+            # Simplify long publisher names
+            if "penguin" in pub_clean.lower():
+                if "random house" in pub_clean.lower():
+                    publisher = "Penguin Random House"
+                elif "uk" in pub_clean.lower() or "britain" in pub_clean.lower():
+                    publisher = "Penguin Random House UK"
+                else:
+                    publisher = "Penguin Books"
+            elif "dorman" in pub_clean.lower() and "viking" in pub_clean.lower():
+                publisher = "Pamela Dorman Books"
             else:
-                publisher = "Penguin Books"
-        elif "dorman" in pub_clean.lower() and "viking" in pub_clean.lower():
-            publisher = "Pamela Dorman Books"
-        else:
-            # Keep original but limit length
-            if len(pub_clean) < 30:
-                publisher = pub_clean
+                # Keep original but limit length
+                if len(pub_clean) < 30:
+                    publisher = pub_clean
     
     # Build filename components
     components = []
@@ -813,7 +815,7 @@ def _download_book_with_cancellation(book_id: str, cancel_flag: Event) -> Option
             except Exception as e:
                 logger.debug(f"Error in progress callback for {book_id[:8]}: {e}")
         
-        # NEW: Enhanced download with final URL metadata extraction
+        # Enhanced download with final URL metadata extraction
         success, final_download_url = book_manager.download_book_with_final_url(book_info, book_path, isolated_progress_callback, cancel_flag)
         
         # Stop progress updates
@@ -829,7 +831,7 @@ def _download_book_with_cancellation(book_id: str, cancel_flag: Event) -> Option
         if not success:
             raise Exception("Unknown error downloading book")
 
-        # NEW: Extract metadata from final download URL if we got one
+        # Extract metadata from final download URL if we got one
         if final_download_url and USE_BOOK_TITLE:
             final_metadata = _extract_metadata_from_final_download_url(final_download_url)
             
@@ -874,7 +876,7 @@ def _download_book_with_cancellation(book_id: str, cancel_flag: Event) -> Option
 
         logger.info(f"✅ Download successful, processing file: {book_info.title}")
 
-        # STEP 2: Fallback file format detection if URL extraction failed or was wrong
+        # Fallback file format detection if URL extraction failed or was wrong
         if book_path.exists():
             detected_format = _detect_file_format(book_path)
             
