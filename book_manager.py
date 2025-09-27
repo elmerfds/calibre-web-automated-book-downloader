@@ -1,8 +1,8 @@
 """Book download manager handling search and retrieval operations."""
 
-import time, json, re
+import time, json, re, hashlib
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 from typing import List, Optional, Dict, Union, Callable, Tuple
 from threading import Event
 from bs4 import BeautifulSoup, Tag, NavigableString
@@ -17,7 +17,38 @@ logger = setup_logger(__name__)
 
 
 def search_books(query: str, filters: SearchFilters) -> List[BookInfo]:
-    """Search for books matching the query."""
+    """Search for books matching the query across multiple sources."""
+    books = []
+    
+    # Search Anna's Archive first
+    aa_books = _search_annas_archive(query, filters)
+    books.extend(aa_books)
+    
+    # Search OceanofPDF for EPUB books
+    try:
+        ocean_books = _search_oceanofpdf(query, filters)
+        books.extend(ocean_books)
+        logger.info(f"Added {len(ocean_books)} EPUB books from OceanofPDF")
+    except Exception as e:
+        logger.error_trace(f"OceanofPDF search failed: {e}")
+    
+    # Sort by format preference and source
+    books.sort(key=lambda x: (
+        SUPPORTED_FORMATS.index(x.format) if x.format in SUPPORTED_FORMATS else len(SUPPORTED_FORMATS),
+        0 if x.info and "source" in x.info and "Anna's Archive" in x.info["source"] else 1
+    ))
+    
+    total_books = len(books)
+    aa_count = len([b for b in books if b.info and "source" in b.info and "Anna's Archive" in b.info["source"]])
+    ocean_count = len([b for b in books if b.info and "source" in b.info and "OceanofPDF" in b.info["source"]])
+    
+    logger.info(f"Total search results: {total_books} books (Anna's Archive: {aa_count}, OceanofPDF: {ocean_count})")
+    
+    return books
+
+
+def _search_annas_archive(query: str, filters: SearchFilters) -> List[BookInfo]:
+    """Search Anna's Archive (existing functionality)."""
     query_html = quote(query)
 
     if filters.isbn:
@@ -51,36 +82,146 @@ def search_books(query: str, filters: SearchFilters) -> List[BookInfo]:
 
     html = downloader.html_get_page(url)
     if not html or "No files found." in html:
-        logger.info(f"No books found for query: '{query}' with filters: {vars(filters)}")
+        logger.info(f"No books found in Anna's Archive for query: '{query}'")
         return []
 
     soup = BeautifulSoup(html, "html.parser")
     tbody = soup.find("table")
     if not tbody:
-        logger.info(f"No results table found for query: '{query}'")
+        logger.info(f"No results table found in Anna's Archive for query: '{query}'")
         return []
 
     books = []
     for line_tr in tbody.find_all("tr"):
         try:
-            book = _parse_search_result_row(line_tr)
+            book = _parse_aa_search_result_row(line_tr)
             if book:
+                # Add source information
+                book.info = book.info or {}
+                book.info["source"] = ["Anna's Archive"]
                 books.append(book)
         except Exception as e:
-            logger.error_trace(f"Failed to parse search result row: {e}")
+            logger.error_trace(f"Failed to parse Anna's Archive result row: {e}")
 
-    books.sort(key=lambda x: (SUPPORTED_FORMATS.index(x.format) if x.format in SUPPORTED_FORMATS else len(SUPPORTED_FORMATS)))
-    
-    if not books:
-        logger.info(f"Search completed but no valid books parsed for query: '{query}'")
-    else:
-        logger.info(f"Found {len(books)} books for query: '{query}'")
-    
+    logger.info(f"Found {len(books)} books from Anna's Archive")
     return books
 
 
-def _parse_search_result_row(row: Tag) -> Optional[BookInfo]:
-    """Parse a single search result row into a BookInfo object."""
+def _search_oceanofpdf(query: str, filters: SearchFilters = None) -> List[BookInfo]:
+    """Search OceanofPDF and return EPUB book information."""
+    try:
+        books = []
+        search_url = f"https://oceanofpdf.com/?s={quote(query)}"
+        
+        html = downloader.html_get_page(search_url, use_bypasser=True)
+        if not html:
+            return books
+            
+        soup = BeautifulSoup(html, "html.parser")
+        articles = soup.find_all("article", class_=lambda x: x and "post" in x and "type-post" in x)
+        
+        for article in articles:
+            try:
+                title_link = article.find("a", class_="entry-title-link")
+                if not title_link:
+                    continue
+                    
+                book_url = title_link.get("href", "")
+                title = title_link.get_text(strip=True)
+                
+                # Extract metadata
+                meta_div = article.find("div", class_="postmetainfo")
+                author = "Unknown Author"
+                language = "English"
+                genres = ""
+                
+                if meta_div:
+                    meta_text = meta_div.get_text()
+                    author_match = re.search(r"Author:\s*([^\n\r]+)", meta_text)
+                    if author_match:
+                        author = author_match.group(1).strip()
+                    
+                    lang_match = re.search(r"Language:\s*([^\n\r]+)", meta_text)
+                    if lang_match:
+                        language = lang_match.group(1).strip()
+                    
+                    genre_match = re.search(r"Genre:\s*([^\n\r]+)", meta_text)
+                    if genre_match:
+                        genres = genre_match.group(1).strip()
+                
+                # Get EPUB download info from book page
+                epub_download_info = _get_oceanofpdf_epub_info(book_url)
+                
+                if epub_download_info:
+                    book_info = BookInfo(
+                        id=f"oceanpdf_{hashlib.md5(book_url.encode()).hexdigest()[:12]}",
+                        title=title,
+                        author=author,
+                        language=language,
+                        format="epub",  # Always EPUB for OceanofPDF
+                        preview=_extract_cover_image(article),
+                        download_urls=[epub_download_info],
+                        info={
+                            "source": ["OceanofPDF"],
+                            "genres": [genres] if genres else []
+                        }
+                    )
+                    books.append(book_info)
+                
+            except Exception as e:
+                logger.debug(f"Error parsing OceanofPDF book: {e}")
+                continue
+                
+        logger.info(f"Found {len(books)} EPUB books from OceanofPDF")
+        return books
+        
+    except Exception as e:
+        logger.error_trace(f"Error searching OceanofPDF: {e}")
+        return []
+
+
+def _get_oceanofpdf_epub_info(book_page_url: str) -> Optional[str]:
+    """Extract EPUB download information from OceanofPDF book page."""
+    try:
+        html = downloader.html_get_page(book_page_url, use_bypasser=True)
+        if not html:
+            return None
+            
+        soup = BeautifulSoup(html, "html.parser")
+        
+        # Find the EPUB form
+        forms = soup.find_all("form", action=lambda x: x and "Fetching_Resource.php" in x)
+        
+        for form in forms:
+            filename_input = form.find("input", {"name": "filename"})
+            if filename_input:
+                filename = filename_input.get("value", "")
+                if filename.endswith(".epub"):
+                    id_input = form.find("input", {"name": "id"})
+                    if id_input:
+                        server_id = id_input.get("value", "")
+                        # Return custom URL format for OceanofPDF
+                        return f"oceanofpdf://{server_id}/{quote(filename)}/{quote(book_page_url)}"
+                        
+        return None
+        
+    except Exception as e:
+        logger.debug(f"Error extracting OceanofPDF EPUB info: {e}")
+        return None
+
+
+def _extract_cover_image(article) -> str:
+    """Extract cover image from OceanofPDF article."""
+    img_link = article.find("a", class_="entry-image-link")
+    if img_link:
+        img = img_link.find("img")
+        if img:
+            return img.get("data-src") or img.get("src", "")
+    return ""
+
+
+def _parse_aa_search_result_row(row: Tag) -> Optional[BookInfo]:
+    """Parse a single Anna's Archive search result row into a BookInfo object."""
     try:
         cells = row.find_all("td")
         preview_img = cells[0].find("img")
@@ -98,12 +239,25 @@ def _parse_search_result_row(row: Tag) -> Optional[BookInfo]:
             size=cells[10].find("span").next,
         )
     except Exception as e:
-        logger.error_trace(f"Error parsing search result row: {e}")
+        logger.error_trace(f"Error parsing Anna's Archive search result row: {e}")
         return None
 
 
 def get_book_info(book_id: str) -> BookInfo:
     """Get detailed information for a specific book."""
+    # Handle OceanofPDF IDs differently
+    if book_id.startswith("oceanpdf_"):
+        # For OceanofPDF books, we already have the download info
+        # This is a simplified version - in practice you might want to store more info
+        return BookInfo(
+            id=book_id,
+            title="OceanofPDF Book",
+            author="Unknown Author",
+            format="epub",
+            download_urls=[]  # Would need to reconstruct from stored data
+        )
+    
+    # Existing Anna's Archive logic
     url = f"{AA_BASE_URL}/md5/{book_id}"
     html = downloader.html_get_page(url)
     if not html:
@@ -111,6 +265,47 @@ def get_book_info(book_id: str) -> BookInfo:
 
     soup = BeautifulSoup(html, "html.parser")
     return _parse_book_info_page(soup, book_id)
+
+
+def download_book_with_final_url(book_info: BookInfo, book_path: Path, progress_callback: Optional[Callable[[float], None]] = None, cancel_flag: Optional[Event] = None) -> Tuple[bool, Optional[str]]:
+    """Download a book from available sources and return the final download URL."""
+    if len(book_info.download_urls) == 0:
+        book_info = get_book_info(book_info.id)
+    
+    download_links = book_info.download_urls[:]
+    
+    # Add Anna's Archive donator link if available
+    if AA_DONATOR_KEY and not book_info.id.startswith("oceanpdf_"):
+        download_links.insert(0, f"{AA_BASE_URL}/dyn/api/fast_download.json?md5={book_info.id}&key={AA_DONATOR_KEY}")
+
+    for link in download_links:
+        try:
+            if link.startswith("oceanofpdf://"):
+                # Handle OceanofPDF downloads
+                logger.info(f"Downloading `{book_info.title}` from OceanofPDF")
+                data = downloader.download_oceanofpdf_file(link, progress_callback, cancel_flag)
+                if data:
+                    with open(book_path, "wb") as f:
+                        f.write(data.getbuffer())
+                    logger.info(f"Successfully downloaded EPUB: {book_info.title}")
+                    return True, link
+            else:
+                # Existing Anna's Archive download logic
+                download_url = _get_download_url(link, book_info.title, cancel_flag)
+                if download_url:
+                    logger.info(f"Downloading `{book_info.title}` from `{download_url}`")
+                    
+                    data = downloader.download_url(download_url, book_info.size or "", progress_callback, cancel_flag)
+                    if data:
+                        with open(book_path, "wb") as f:
+                            f.write(data.getbuffer())
+                        logger.info(f"Successfully downloaded: {book_info.title}")
+                        return True, download_url
+        except Exception as e:
+            logger.error_trace(f"Failed to download from {link}: {e}")
+            continue
+
+    return False, None
 
 
 def _is_valid_title(text: str) -> bool:
@@ -122,12 +317,13 @@ def _is_valid_title(text: str) -> bool:
     
     # Reject obvious non-titles using generic patterns
     reject_patterns = [
-        r'^\d{4}$',                                    # Just a year
-        r'^[A-Z][a-z]+ Books,?\s*\d{4}$',            # "Publisher Books, Year"
+        r'^\d{4},                                    # Just a year
+        r'^[A-Z][a-z]+ Books,?\s*\d{4},            # "Publisher Books, Year"
         r'^\w+\s+\[\w+\]',                            # "Language [code]"
         r'\b(epub|pdf|mobi|azw3|fb2|djvu|cbz|cbr)\b', # File formats
         r'\breport\b.*\bquality\b',                   # UI elements
         r'^\w+/.*/',                                  # File paths
+        r'^[a-f0-9]{32},                            # MD5 hash
     ]
     
     return not any(re.search(pattern, text, re.IGNORECASE) for pattern in reject_patterns)
@@ -143,11 +339,12 @@ def _is_valid_author(text: str) -> bool:
     
     # Reject obvious non-authors
     reject_patterns = [
-        r'^\d{4}$',                                    # Just a year
-        r'^[A-Z][a-z]+ Books,?\s*\d{4}$',            # "Publisher Books, Year"
+        r'^\d{4},                                    # Just a year
+        r'^[A-Z][a-z]+ Books,?\s*\d{4},            # "Publisher Books, Year"
         r'\b(epub|pdf|mobi|azw3|fb2|djvu|cbz|cbr)\b', # File formats
         r'\breport\b.*\bquality\b',                   # UI elements
         r'\bunknown\b',                               # "Unknown" placeholder
+        r'^[a-f0-9]{32},                            # MD5 hash
     ]
     
     if any(re.search(pattern, text, re.IGNORECASE) for pattern in reject_patterns):
@@ -155,7 +352,7 @@ def _is_valid_author(text: str) -> bool:
     
     # Check if it looks like a proper name (1-4 words, proper capitalization)
     if 1 <= len(words) <= 4:
-        name_pattern = r'^[A-Z][a-z]+\.?$'  # Allow initials
+        name_pattern = r'^[A-Z][a-z]+\.?  # Allow initials
         return all(re.match(name_pattern, word) for word in words)
     
     return False
@@ -278,7 +475,7 @@ def _parse_book_info_page(soup: BeautifulSoup, book_id: str) -> BookInfo:
         format=format,
         size=size,
         download_urls=urls,
-        info={"ISBN": [isbn]} if isbn else {}
+        info={"ISBN": [isbn], "source": ["Anna's Archive"]} if isbn else {"source": ["Anna's Archive"]}
     )
 
 
@@ -336,46 +533,9 @@ def _get_download_urls_from_welib(book_id: str) -> set[str]:
 
 
 def download_book(book_info: BookInfo, book_path: Path, progress_callback: Optional[Callable[[float], None]] = None, cancel_flag: Optional[Event] = None) -> bool:
-    """Download a book from available sources.
-    
-    Note: This is the legacy function. Use download_book_with_final_url for enhanced functionality.
-    """
+    """Download a book from available sources."""
     success, _ = download_book_with_final_url(book_info, book_path, progress_callback, cancel_flag)
     return success
-
-
-def download_book_with_final_url(book_info: BookInfo, book_path: Path, progress_callback: Optional[Callable[[float], None]] = None, cancel_flag: Optional[Event] = None) -> Tuple[bool, Optional[str]]:
-    """Download a book from available sources and return the final download URL.
-    
-    Returns:
-        Tuple[bool, Optional[str]]: (success, final_download_url)
-    """
-    if len(book_info.download_urls) == 0:
-        book_info = get_book_info(book_info.id)
-    
-    download_links = book_info.download_urls[:]
-    
-    if AA_DONATOR_KEY:
-        download_links.insert(0, f"{AA_BASE_URL}/dyn/api/fast_download.json?md5={book_info.id}&key={AA_DONATOR_KEY}")
-
-    for link in download_links:
-        try:
-            download_url = _get_download_url(link, book_info.title, cancel_flag)
-            if download_url:
-                logger.info(f"Downloading `{book_info.title}` from `{download_url}`")
-                
-                # Download the file and return the final URL for metadata extraction
-                data = downloader.download_url(download_url, book_info.size or "", progress_callback, cancel_flag)
-                if data:
-                    with open(book_path, "wb") as f:
-                        f.write(data.getbuffer())
-                    logger.info(f"Successfully downloaded: {book_info.title}")
-                    return True, download_url  # Return success and final URL
-        except Exception as e:
-            logger.error_trace(f"Failed to download from {link}: {e}")
-            continue
-
-    return False, None  # Return failure and no URL
 
 
 def _get_download_url(link: str, title: str, cancel_flag: Optional[Event] = None) -> str:

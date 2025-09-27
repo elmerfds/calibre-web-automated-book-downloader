@@ -722,11 +722,27 @@ def get_book_data(book_id: str) -> Tuple[Optional[bytes], BookInfo]:
         return None, book_info if book_info else BookInfo(id=book_id, title="Unknown")
 
 def _book_info_to_dict(book: BookInfo) -> Dict[str, Any]:
-    """Convert BookInfo object to dictionary representation."""
-    return {
+    """Convert BookInfo object to dictionary representation with source info."""
+    result = {
         key: value for key, value in book.__dict__.items()
         if value is not None
     }
+    
+    # Ensure source information is always present
+    if 'info' not in result:
+        result['info'] = {}
+    
+    if 'source' not in result.get('info', {}):
+        # Determine source based on book ID or download URLs
+        if book.id and book.id.startswith('oceanpdf_'):
+            result['info']['source'] = ['OceanofPDF']
+        elif book.download_urls and any(url.startswith('oceanofpdf://') for url in book.download_urls):
+            result['info']['source'] = ['OceanofPDF']
+        else:
+            result['info']['source'] = ["Anna's Archive"]
+    
+    return result
+    
 
 def _extract_format_from_url(url: str) -> Optional[str]:
     """Extract file format from download URL."""
