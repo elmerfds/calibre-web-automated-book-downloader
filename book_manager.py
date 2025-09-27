@@ -317,13 +317,13 @@ def _is_valid_title(text: str) -> bool:
     
     # Reject obvious non-titles using generic patterns
     reject_patterns = [
-        r'^\d{4},                                    # Just a year
-        r'^[A-Z][a-z]+ Books,?\s*\d{4},            # "Publisher Books, Year"
+        r'^\d{4}$',                                    # Just a year
+        r'^[A-Z][a-z]+ Books,?\s*\d{4}$',            # "Publisher Books, Year"
         r'^\w+\s+\[\w+\]',                            # "Language [code]"
         r'\b(epub|pdf|mobi|azw3|fb2|djvu|cbz|cbr)\b', # File formats
         r'\breport\b.*\bquality\b',                   # UI elements
         r'^\w+/.*/',                                  # File paths
-        r'^[a-f0-9]{32},                            # MD5 hash
+        r'^[a-f0-9]{32}$',                            # MD5 hash
     ]
     
     return not any(re.search(pattern, text, re.IGNORECASE) for pattern in reject_patterns)
@@ -339,12 +339,12 @@ def _is_valid_author(text: str) -> bool:
     
     # Reject obvious non-authors
     reject_patterns = [
-        r'^\d{4},                                    # Just a year
-        r'^[A-Z][a-z]+ Books,?\s*\d{4},            # "Publisher Books, Year"
+        r'^\d{4}$',                                    # Just a year
+        r'^[A-Z][a-z]+ Books,?\s*\d{4}$',            # "Publisher Books, Year"
         r'\b(epub|pdf|mobi|azw3|fb2|djvu|cbz|cbr)\b', # File formats
         r'\breport\b.*\bquality\b',                   # UI elements
         r'\bunknown\b',                               # "Unknown" placeholder
-        r'^[a-f0-9]{32},                            # MD5 hash
+        r'^[a-f0-9]{32}$',                            # MD5 hash
     ]
     
     if any(re.search(pattern, text, re.IGNORECASE) for pattern in reject_patterns):
@@ -352,7 +352,7 @@ def _is_valid_author(text: str) -> bool:
     
     # Check if it looks like a proper name (1-4 words, proper capitalization)
     if 1 <= len(words) <= 4:
-        name_pattern = r'^[A-Z][a-z]+\.?  # Allow initials
+        name_pattern = r'^[A-Z][a-z]+\.?$'  # Allow initials
         return all(re.match(name_pattern, word) for word in words)
     
     return False
