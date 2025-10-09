@@ -1,5 +1,5 @@
 // Modern UI script: search, cards, details, downloads, status, theme
-// Updated to show book sources in search results
+// Reuses existing API endpoints. Keeps logic minimal and accessible.
 
 (function () {
   // ---- DOM ----
@@ -83,25 +83,7 @@
     // Simple notification via alert fallback
     toast(msg) { try { console.info(msg); } catch (_) {} },
     // Escapes text for safe HTML injection
-    e(text) { return (text ?? '').toString(); },
-    // Get book source for display
-    getBookSource(book) {
-      if (book.info && book.info.source && Array.isArray(book.info.source)) {
-        return book.info.source[0];
-      }
-      return 'Unknown Source';
-    },
-    // Get source badge styling
-    getSourceBadge(source) {
-      const badges = {
-        "Anna's Archive": { color: 'bg-blue-600', text: 'AA' },
-        "OceanofPDF": { color: 'bg-green-600', text: 'Ocean' },
-        "LibGen": { color: 'bg-purple-600', text: 'LibGen' },
-        "Z-Library": { color: 'bg-orange-600', text: 'Z-Lib' }
-      };
-      const badge = badges[source] || { color: 'bg-gray-600', text: 'Other' };
-      return `<span class="px-2 py-1 text-xs rounded text-white ${badge.color}">${badge.text}</span>`;
-    }
+    e(text) { return (text ?? '').toString(); }
   };
 
   // ---- Modal ----
@@ -115,24 +97,18 @@
     const cover = book.preview ? `<img src="${utils.e(book.preview)}" alt="Cover" class="w-full h-88 object-cover rounded">` :
       `<div class="w-full h-88 rounded flex items-center justify-center opacity-70" style="background: var(--bg-soft)">No Cover</div>`;
 
-    const source = utils.getBookSource(book);
-    const sourceBadge = utils.getSourceBadge(source);
-
     const html = `
       <article class="rounded border p-3 flex flex-col gap-3" style="border-color: var(--border-muted); background: var(--bg-soft)">
         ${cover}
         <div class="flex-1 space-y-1">
-          <div class="flex items-start justify-between gap-2">
-            <h3 class="font-semibold leading-tight flex-1">${utils.e(book.title) || 'Untitled'}</h3>
-            ${sourceBadge}
-          </div>
+          <h3 class="font-semibold leading-tight">${utils.e(book.title) || 'Untitled'}</h3>
           <p class="text-sm opacity-80">${utils.e(book.author) || 'Unknown author'}</p>
           <div class="text-xs opacity-70 flex flex-wrap gap-2">
             <span>${utils.e(book.year) || '-'}</span>
             <span>•</span>
             <span>${utils.e(book.language) || '-'}</span>
             <span>•</span>
-            <span class="font-medium">${utils.e(book.format) || '-'}</span>
+            <span>${utils.e(book.format) || '-'}</span>
             ${book.size ? `<span>•</span><span>${utils.e(book.size)}</span>` : ''}
           </div>
         </div>
@@ -197,23 +173,14 @@
     },
     tpl(book) {
       const cover = book.preview ? `<img src="${utils.e(book.preview)}" alt="Cover" class="w-full h-88 object-cover rounded">` : '';
-      const source = utils.getBookSource(book);
-      const sourceBadge = utils.getSourceBadge(source);
-      
-      const infoList = book.info ? Object.entries(book.info).map(([k, v]) => {
-        if (k === 'source') return ''; // Don't show source in info list since it's displayed as badge
-        return `<li><strong>${utils.e(k)}:</strong> ${utils.e((v||[]).join ? v.join(', ') : v)}</li>`;
-      }).filter(item => item).join('') : '';
-      
+      const infoList = book.info ? Object.entries(book.info).map(([k, v]) => `<li><strong>${utils.e(k)}:</strong> ${utils.e((v||[]).join 
+        ? v.join(', ') : v)}</li>`).join('') : '';
       return `
         <div class="p-4 space-y-4">
           <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>${cover}</div>
             <div>
-              <div class="flex items-start justify-between gap-2 mb-2">
-                <h3 class="text-lg font-semibold flex-1">${utils.e(book.title) || 'Untitled'}</h3>
-                ${sourceBadge}
-              </div>
+              <h3 class="text-lg font-semibold mb-1">${utils.e(book.title) || 'Untitled'}</h3>
               <p class="text-sm opacity-80">${utils.e(book.author) || 'Unknown author'}</p>
               <div class="text-sm mt-2 space-y-1">
                 <p><strong>Publisher:</strong> ${utils.e(book.publisher) || '-'}</p>
@@ -221,11 +188,10 @@
                 <p><strong>Language:</strong> ${utils.e(book.language) || '-'}</p>
                 <p><strong>Format:</strong> ${utils.e(book.format) || '-'}</p>
                 <p><strong>Size:</strong> ${utils.e(book.size) || '-'}</p>
-                <p><strong>Source:</strong> ${source}</p>
               </div>
             </div>
           </div>
-          ${infoList ? `<div><h4 class="font-semibold mb-2">Additional Information</h4><ul class="list-disc pl-6 space-y-1 text-sm">${infoList}</ul></div>` : ''}
+          ${infoList ? `<div><h4 class="font-semibold mb-2">Further Information</h4><ul class="list-disc pl-6 space-y-1 text-sm">${infoList}</ul></div>` : ''}
           <div class="flex gap-2">
             <button id="download-button" class="px-3 py-2 rounded bg-blue-600 hover:bg-blue-700 text-white text-sm">Download</button>
             <button id="close-details" class="px-3 py-2 rounded border text-sm" style="border-color: var(--border-muted);">Close</button>
@@ -264,9 +230,6 @@
         if (!items || Object.keys(items).length === 0) continue;
         const rows = Object.values(items).map((b) => {
           const titleText = utils.e(b.title) || '-';
-          const source = utils.getBookSource(b);
-          const sourceBadge = utils.getSourceBadge(source);
-          
           const maybeLinkedTitle = b.download_path
             ? `<a href="/request/api/localdownload?id=${encodeURIComponent(b.id)}" class="text-blue-600 hover:underline">${titleText}</a>`
             : titleText;
@@ -277,12 +240,7 @@
             ? `<div class="h-2 bg-black/10 rounded overflow-hidden"><div class="h-2 bg-blue-600" style="width:${Math.round(b.progress)}%"></div></div>`
             : '';
           return `<li class="p-3 rounded border flex flex-col gap-2" style="border-color: var(--border-muted); background: var(--bg-soft)">
-            <div class="flex items-start justify-between gap-2">
-              <div class="text-sm flex-1">
-                <span class="opacity-70">${utils.e(name)}</span> • <strong>${maybeLinkedTitle}</strong>
-              </div>
-              ${sourceBadge}
-            </div>
+            <div class="text-sm"><span class="opacity-70">${utils.e(name)}</span> • <strong>${maybeLinkedTitle}</strong></div>
             ${progress}
             <div class="flex items-center gap-2">${actions}</div>
           </li>`;
@@ -311,18 +269,13 @@
         }
         // Build compact rows with title and progress bar + cancel
         const rows = downloading.map((b) => {
-          const source = utils.getBookSource(b);
-          const sourceBadge = utils.getSourceBadge(source);
           const prog = (typeof b.progress === 'number')
             ? `<div class="h-1.5 bg-black/10 rounded overflow-hidden"><div class="h-1.5 bg-blue-600" style="width:${Math.round(b.progress)}%"></div></div>`
             : '';
           const cancel = `<button class="px-2 py-0.5 rounded border text-xs" data-cancel="${utils.e(b.id)}" style="border-color: var(--border-muted);">Cancel</button>`;
           return `<div class="p-3 rounded border" style="border-color: var(--border-muted); background: var(--bg-soft)">
             <div class="flex items-center justify-between gap-3">
-              <div class="text-sm truncate flex-1">
-                <strong>${utils.e(b.title || '-')}</strong>
-                <span class="ml-2">${sourceBadge}</span>
-              </div>
+              <div class="text-sm truncate"><strong>${utils.e(b.title || '-') }</strong></div>
               <div class="shrink-0">${cancel}</div>
             </div>
             ${prog}
